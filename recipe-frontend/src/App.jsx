@@ -1,6 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Search, Settings, Plus, Calendar, ShoppingCart, X, AlertCircle, Bookmark } from 'lucide-react';
-import io from 'socket.io-client';
+import React, { useState } from 'react';
+import { Search, Settings, Plus, Calendar, ShoppingCart, X, Bookmark } from 'lucide-react';
 
 const styles = `
   * { box-sizing: border-box; -webkit-font-smoothing: antialiased; margin: 0; padding: 0; }
@@ -242,68 +241,11 @@ export default function RecipeApp() {
   const [newIngredient, setNewIngredient] = useState({ name: '', pricePerUnit: '', unitQuantity: '', unit: 'kg' });
   const [selectedRecipe, setSelectedRecipe] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [connected, setConnected] = useState(false);
   const [status, setStatus] = useState('');
   const [notifications, setNotifications] = useState([]);
 
   // Use environment variable, fallback to localhost for development
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
-  const isDevelopment = !import.meta.env.VITE_API_URL;
-  const socketRef = React.useRef(null);
-
-  useEffect(() => {
-    console.log('Connecting to API_URL:', API_URL);
-    const s = io(API_URL, { 
-      reconnection: true, 
-      reconnectionDelay: 1000, 
-      reconnectionDelayMax: 5000, 
-      reconnectionAttempts: 5,
-      transports: ['websocket', 'polling']
-    });
-    socketRef.current = s;
-
-    s.on('connect', () => { 
-      console.log('✅ Connected to server');
-      setConnected(true); 
-      addNotification('Connected to server', 'success'); 
-    });
-
-    s.on('disconnect', () => { 
-      console.log('❌ Disconnected from server');
-      setConnected(false); 
-      addNotification('Disconnected from server', 'error'); 
-    });
-
-    s.on('video_analysis_started', () => setStatus('📹 Analyzing video...'));
-    s.on('video_downloaded', () => setStatus('✓ Video downloaded, extracting frames...'));
-    s.on('frames_extracted', d => setStatus(`✓ Extracted ${d.count} frames, analyzing with AI...`));
-    s.on('gemini_analyzing', () => setStatus('🤖 AI analyzing frames...'));
-    s.on('video_analysis_complete', d => {
-      setStatus('✓ Video analysis complete!');
-      setRecipes(prev => [...prev, { ...d.recipe, id: prev.length + 1 }]);
-      setVideoInput(''); setShowVideoInput(false); setLoading(false);
-      addNotification('Video analysis complete!', 'success');
-    });
-    s.on('video_analysis_error', d => { 
-      setStatus(`❌ Error: ${d.error}`); 
-      setLoading(false); 
-      addNotification(`Error: ${d.error}`, 'error'); 
-    });
-    s.on('recipe_generation_started', () => setStatus('🍳 Generating recipe ideas...'));
-    s.on('recipe_generation_complete', d => { 
-      setStatus('✓ Recipes ready!'); 
-      setSuggestedRecipes(d.recipes); 
-      setLoading(false); 
-      addNotification('Recipes generated!', 'success'); 
-    });
-    s.on('recipe_generation_error', d => { 
-      setStatus(`❌ Error: ${d.error}`); 
-      setLoading(false); 
-      addNotification(`Error: ${d.error}`, 'error'); 
-    });
-
-    return () => s.close();
-  }, [API_URL]);
 
   const addNotification = (msg, type = 'info') => {
     const id = Date.now();
@@ -334,17 +276,28 @@ export default function RecipeApp() {
   const handleVideoInput = async () => {
     if (!videoInput.trim()) { addNotification('Please enter a video URL', 'error'); return; }
     setLoading(true);
+    setStatus('📹 Analyzing video with AI...');
     try {
       const res = await fetch(`${API_URL}/api/analyze-video`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ url: videoInput, socketId: socketRef.current?.id }) 
+        body: JSON.stringify({ url: videoInput }) 
       });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
+      const data = await res.json();
+      if (data.recipe) {
+        setRecipes(prev => [...prev, { ...data.recipe, id: prev.length + 1 }]);
+        setVideoInput('');
+        setShowVideoInput(false);
+        setStatus('✓ Video analysis complete!');
+        addNotification('Recipe added!', 'success');
+      }
     } catch (e) { 
       console.error('Error:', e);
+      setStatus('');
       addNotification('Error connecting to server. Make sure backend is running.', 'error'); 
-      setLoading(false); 
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -533,23 +486,10 @@ export default function RecipeApp() {
 
         {/* ─── MAIN COLUMN ─── */}
         <div className="main">
-          {!connected && (
-            <div className="conn-banner">
-              <AlertCircle size={16} color="#e53e3e" />
-              <span>{isDevelopment ? 'Connecting to local server...' : 'Connecting to cloud server at ' + API_URL}</span>
-            </div>
-          )}
-
-          {/* ─── DESKTOP TOP BAR ─── */}
+        {/* ─── DESKTOP TOP BAR ─── */}
           <div className="topbar">
             <h1 className="topbar-title">{tabTitle}</h1>
             <div className="topbar-right">
-              {connected && (
-                <div className="live-badge">
-                  <div className="live-dot" />
-                  <span className="live-label">Live</span>
-                </div>
-              )}
               {activeTab === 'home' && (
                 <div className="topbar-segment">
                   <button className={`topbar-seg-btn ${recipeFilter === 'all' ? 'active' : ''}`} onClick={() => setRecipeFilter('all')}>All Recipes</button>
@@ -581,12 +521,6 @@ export default function RecipeApp() {
             <div className="mobile-header-row">
               <h1 className="mobile-title">{tabTitle}</h1>
               <div className="header-icons">
-                {connected && (
-                  <div className="live-badge">
-                    <div className="live-dot" />
-                    <span className="live-label">Live</span>
-                  </div>
-                )}
                 <button className="header-icon-btn"><Search size={17} /></button>
                 <button className="header-icon-btn"><Settings size={17} /></button>
               </div>

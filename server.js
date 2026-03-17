@@ -1,10 +1,8 @@
 // server.js - Node.js Backend for Recipe App
-// Install dependencies: npm install express socket.io cors dotenv axios fluent-ffmpeg child_process form-data
+// Install dependencies: npm install express cors dotenv axios form-data
 // Run: node server.js
 
 const express = require('express');
-const http = require('http');
-const { Server } = require('socket.io');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const axios = require('axios');
@@ -16,27 +14,11 @@ const FormData = require('form-data');
 dotenv.config();
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, {
-  cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
-  }
-});
-
 app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3001;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyBZYNMO6OC1lB1eAEFA5q8rqwNV17R0Lcc';
-
-// Socket.io connection handler
-io.on('connection', (socket) => {
-  console.log('Client connected:', socket.id);
-  socket.on('disconnect', () => {
-    console.log('Client disconnected:', socket.id);
-  });
-});
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // Helper: Download video from URL
 async function downloadVideo(url) {
@@ -219,21 +201,14 @@ function cleanup(filePath) {
 // Analyze video from URL
 app.post('/api/analyze-video', async (req, res) => {
   try {
-    const { url, socketId } = req.body;
+    const { url } = req.body;
 
     if (!url) {
       return res.status(400).json({ error: 'URL required' });
     }
 
-    // Emit progress events to the specific socket if provided
-    const emit = (event, data) => {
-      if (socketId) io.to(socketId).emit(event, data);
-    };
-
-    emit('video_analysis_started');
     console.log('Downloading video...');
     const videoPath = await downloadVideo(url);
-    emit('video_downloaded');
 
     console.log('Extracting frames...');
     const frames = await extractFrames(videoPath);
@@ -244,8 +219,6 @@ app.post('/api/analyze-video', async (req, res) => {
     }
 
     console.log(`Extracted ${frames.length} frames`);
-    emit('frames_extracted', { count: frames.length });
-
     const base64Frames = frames.map(f => imageToBase64(f));
 
     const prompt = `Analyze these video frames from a cooking video and extract:
@@ -264,7 +237,6 @@ Provide a JSON response:
   "difficulty": "medium"
 }`;
 
-    emit('gemini_analyzing');
     console.log('Analyzing with Gemini...');
     const analysisText = await analyzeWithGemini(base64Frames, prompt);
     const recipe = parseRecipeResponse(analysisText);
@@ -274,7 +246,6 @@ Provide a JSON response:
     cleanup(videoPath);
     frames.forEach(f => cleanup(f));
 
-    emit('video_analysis_complete', { recipe });
     res.json({ recipe });
   } catch (error) {
     console.error('Video analysis error:', error);
@@ -317,11 +288,10 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', geminiConfigured: !!GEMINI_API_KEY });
 });
 
-// Start server — use server.listen, NOT app.listen
-server.listen(PORT, () => {
+// Start server
+app.listen(PORT, () => {
   console.log(`\n🍳 Recipe App Server running on http://localhost:${PORT}`);
   console.log(`📚 Gemini API Key: ${GEMINI_API_KEY ? 'Configured ✓' : 'NOT SET ⚠️'}`);
-  console.log(`🔌 Socket.io: Enabled ✓`);
   console.log(`\nEndpoints:`);
   console.log(`  POST /api/analyze-video - Analyze video from URL`);
   console.log(`  POST /api/generate-recipes - Generate recipes from ingredients`);
