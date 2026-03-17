@@ -1,29 +1,20 @@
 {
   "name": "recipe-app",
   "version": "1.0.0",
-  "description": "AI-powered recipe analyzer with Gemini 2.5 Flash",
+  "description": "AI-powered recipe analyzer with Gemini",
   "main": "server.js",
+  "type": "module",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"
   },
   "dependencies": {
-    "axios": "^1.4.0",
-    "cors": "^2.8.5",
-    "dotenv": "^16.0.3",
     "express": "^4.18.2",
-    "form-data": "^4.0.0",
-    "lucide-react": "^0.577.0"
+    "socket.io": "^4.8.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1"
   },
   "devDependencies": {
-    "nodemon": "^2.0.22"
-  },
-  "keywords": [
-    "recipe",
-    "ai",
-    "gemini",
-    "video-analysis"
-  ],
-  "author": "",
-  "license": "MIT"
+    "nodemon": "^3.0.2"
+  }
 }
