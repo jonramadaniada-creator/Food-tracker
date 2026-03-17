@@ -246,12 +246,13 @@ export default function RecipeApp() {
   const [status, setStatus] = useState('');
   const [notifications, setNotifications] = useState([]);
 
-  // ✅ FIXED: Use import.meta.env.VITE_API_URL (Vite syntax, not process.env)
+  // Use environment variable, fallback to localhost for development
   const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
   const isDevelopment = !import.meta.env.VITE_API_URL;
+  const socketRef = React.useRef(null);
 
   useEffect(() => {
-    console.log('✅ Connecting to API_URL:', API_URL);
+    console.log('Connecting to API_URL:', API_URL);
     const s = io(API_URL, { 
       reconnection: true, 
       reconnectionDelay: 1000, 
@@ -259,6 +260,7 @@ export default function RecipeApp() {
       reconnectionAttempts: 5,
       transports: ['websocket', 'polling']
     });
+    socketRef.current = s;
 
     s.on('connect', () => { 
       console.log('✅ Connected to server');
@@ -336,7 +338,7 @@ export default function RecipeApp() {
       const res = await fetch(`${API_URL}/api/analyze-video`, { 
         method: 'POST', 
         headers: { 'Content-Type': 'application/json' }, 
-        body: JSON.stringify({ url: videoInput }) 
+        body: JSON.stringify({ url: videoInput, socketId: socketRef.current?.id }) 
       });
       if (!res.ok) throw new Error(`HTTP error! status: ${res.status}`);
     } catch (e) { 
