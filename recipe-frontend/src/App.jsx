@@ -246,12 +246,12 @@ export default function RecipeApp() {
   const [status, setStatus] = useState('');
   const [notifications, setNotifications] = useState([]);
 
-  // Use environment variable, fallback to localhost for development
-  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:3001';
-  const isDevelopment = !process.env.REACT_APP_API_URL;
+  // ✅ FIXED: Use import.meta.env.VITE_API_URL (Vite syntax, not process.env)
+  const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
+  const isDevelopment = !import.meta.env.VITE_API_URL;
 
   useEffect(() => {
-    console.log('Connecting to API_URL:', API_URL);
+    console.log('✅ Connecting to API_URL:', API_URL);
     const s = io(API_URL, { 
       reconnection: true, 
       reconnectionDelay: 1000, 
