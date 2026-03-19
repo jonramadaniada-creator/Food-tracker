@@ -41,7 +41,7 @@ async function downloadVideo(url) {
   return videoPath;
 }
 
-// ── Frame extraction ──
+// ── Frame extraction - returns all frames ──
 async function extractFrames(videoPath) {
   const frameDir = path.join('/tmp', `frames_${Date.now()}`);
   fs.mkdirSync(frameDir, { recursive: true });
@@ -53,14 +53,16 @@ async function extractFrames(videoPath) {
     });
   });
 
-  const fps = Math.max(1, Math.min(4, (20 / duration))).toFixed(2);
+  // Extract 20 frames spread across the full video
+  const fps = Math.max(0.5, Math.min(4, (20 / duration))).toFixed(2);
 
   return new Promise((resolve, reject) => {
     exec(`"${ffmpegPath}" -i "${videoPath}" -vf "fps=${fps},scale=640:-1" "${frameDir}/frame_%03d.jpg"`, (err) => {
       if (err) { reject(new Error('Failed to extract frames')); return; }
       const frames = fs.readdirSync(frameDir)
         .filter(f => f.endsWith('.jpg'))
-        .slice(0, 5) // Groq vision supports max 5 images
+        .sort()
+        .slice(0, 20)
         .map(f => path.join(frameDir, f));
       resolve(frames);
     });
@@ -71,33 +73,92 @@ function cleanup(...paths) {
   paths.flat().forEach(p => { try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch {} });
 }
 
-function buildRecipePrompt(profile) {
+// ── Multi-pass analysis: 4 passes of 5 frames each ──
+async function analyzeFramesMultiPass(frames, profile) {
+  // Split 20 frames into 4 batches of 5
+  const batches = [];
+  for (let i = 0; i < frames.length; i += 5) {
+    batches.push(frames.slice(i, i + 5));
+  }
+
+  // Pass each batch to Groq asking only for ingredients seen
+  const ingredientLists = await Promise.all(batches.map(async (batch, idx) => {
+    const imageMessages = batch.map(f => ({
+      type: 'image_url',
+      image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(f).toString('base64')}` }
+    }));
+
+    const response = await groq.chat.completions.create({
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{
+        role: 'user',
+        content: [
+          ...imageMessages,
+          {
+            type: 'text',
+            text: `These are frames ${idx * 5 + 1}-${idx * 5 + batch.length} from a cooking video.
+List EVERY ingredient you can see in these frames, including anything shown briefly.
+Include quantities/amounts if visible (e.g. "900g potatoes", "2 tbsp olive oil").
+Also note any cooking steps or techniques you see happening.
+Return ONLY a JSON object:
+{
+  "ingredients": ["ingredient with quantity", "..."],
+  "steps": ["any cooking action you see", "..."],
+  "notes": "any other observations about the dish or quantities"
+}`
+          }
+        ]
+      }],
+      max_tokens: 800,
+      temperature: 0.2
+    });
+
+    try {
+      const text = response.choices[0].message.content;
+      return JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]);
+    } catch {
+      return { ingredients: [], steps: [], notes: '' };
+    }
+  }));
+
+  // Combine all observations
+  const allIngredients = [...new Set(ingredientLists.flatMap(r => r?.ingredients || []))];
+  const allSteps = ingredientLists.flatMap(r => r?.steps || []);
+  const allNotes = ingredientLists.map(r => r?.notes || '').filter(Boolean).join(' ');
+
+  // Final call: compile full recipe + nutrition from combined data
   const profileInfo = profile
-    ? `User profile: Age ${profile.age}, ${profile.sex}, ${profile.height}cm, ${profile.weight}kg, activity: ${profile.activity}, training: ${profile.training}. Use this to calculate personalized daily RDI percentages.`
+    ? `User profile: Age ${profile.age}, ${profile.sex}, ${profile.height}cm, ${profile.weight}kg, activity: ${profile.activity}, training: ${profile.training}. Calculate personalized RDI percentages.`
     : `Use standard adult RDI values (2000 kcal reference diet).`;
 
-  return `You are a professional nutritionist and chef analyzing frames from a fast-paced cooking video (Instagram Reel / TikTok).
-Frames are sampled throughout the full video — look for text overlays, ingredients shown briefly, cooking actions, and the final dish.
+  const finalResponse = await groq.chat.completions.create({
+    model: 'llama-3.3-70b-versatile',
+    messages: [{
+      role: 'user',
+      content: `You are a professional nutritionist and chef. Based on the following observations extracted from a cooking video, compile the complete recipe and full nutritional breakdown.
 
-CRITICAL INGREDIENT RULES:
-- List EVERY ingredient you see at any point in the video, even if shown for 1 second
-- Include ALL vegetables, spices, oils, sauces, garnishes — nothing is too small to include
-- For each ingredient, estimate the weight/quantity as accurately as possible from what you see
-- If you see a 1kg bag of potatoes and most is used, write "900g potatoes" not just "potatoes"
+OBSERVED INGREDIENTS (from 4 passes through the video):
+${allIngredients.join('\n')}
 
-SERVING CALCULATION:
-- Count how many servings the recipe makes (look at how many plates/portions are shown)
-- Calculate total recipe weight = sum of all main ingredients
-- servingWeight = total recipe weight / number of servings (in grams)
-- ALL nutrition values must be for exactly 1 serving (total / servings)
+OBSERVED COOKING STEPS:
+${allSteps.join('\n')}
+
+ADDITIONAL NOTES:
+${allNotes}
 
 ${profileInfo}
+
+Rules:
+- Merge duplicate ingredients (e.g. "potatoes" and "900g potatoes" → use "900g potatoes")
+- Estimate servings from the quantities (e.g. 900g potatoes + other ingredients likely = 3-4 servings)
+- servingWeight = total estimated cooked weight / servings
+- ALL nutrition values must be for exactly 1 serving
 
 Return ONLY valid JSON (no extra text, no markdown):
 {
   "title": "Recipe Name",
   "description": "One sentence description",
-  "ingredients": ["900g potatoes", "2 chicken breasts (approx 400g)", "3 tbsp olive oil"],
+  "ingredients": ["900g potatoes", "400g chicken breast", "3 tbsp olive oil"],
   "steps": ["Step 1", "Step 2"],
   "cookTime": 25,
   "servings": 4,
@@ -148,50 +209,31 @@ Return ONLY valid JSON (no extra text, no markdown):
       }
     }
   }
-}`;
+}`
+    }],
+    max_tokens: 4000,
+    temperature: 0.2
+  });
+
+  const finalText = finalResponse.choices[0].message.content;
+  let recipe = {};
+  try { recipe = JSON.parse(finalText.match(/\{[\s\S]*\}/)?.[0]); } catch {}
+  return recipe;
+}
 }
 
 // ── Upload + analyze ──
 app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-
   let profile = null;
   try { profile = req.body.profile ? JSON.parse(req.body.profile) : null; } catch {}
-
   const videoPath = req.file.path;
   let frames = [];
   try {
     frames = await extractFrames(videoPath);
     if (!frames.length) throw new Error('No frames extracted');
-
-    // Build image content for Groq vision
-    const imageMessages = frames.map(f => ({
-      type: 'image_url',
-      image_url: {
-        url: `data:image/jpeg;base64,${fs.readFileSync(f).toString('base64')}`
-      }
-    }));
-
-    const response = await groq.chat.completions.create({
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      messages: [
-        {
-          role: 'user',
-          content: [
-            ...imageMessages,
-            { type: 'text', text: buildRecipePrompt(profile) }
-          ]
-        }
-      ],
-      max_tokens: 4000,
-      temperature: 0.3
-    });
-
-    const text = response.choices[0].message.content;
-    let recipe = {};
-    try { recipe = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]); } catch {}
+    const recipe = await analyzeFramesMultiPass(frames, profile);
     recipe.image = 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
-
     cleanup(videoPath, frames);
     res.json({ recipe });
   } catch (err) {
@@ -207,30 +249,15 @@ app.post('/api/analyze-video', async (req, res) => {
   if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
     return res.status(400).json({ error: 'Valid URL required' });
   }
-
+  let profile = null;
+  try { profile = req.body.profile ? JSON.parse(req.body.profile) : null; } catch {}
   let videoPath, frames = [];
   try {
     videoPath = await downloadVideo(url);
     frames = await extractFrames(videoPath);
     if (!frames.length) throw new Error('No frames extracted');
-
-    const imageMessages = frames.map(f => ({
-      type: 'image_url',
-      image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(f).toString('base64')}` }
-    }));
-
-    const response = await groq.chat.completions.create({
-      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      messages: [{ role: 'user', content: [...imageMessages, { type: 'text', text: buildRecipePrompt(req.body.profile ? JSON.parse(req.body.profile) : null) }] }],
-      max_tokens: 4000,
-      temperature: 0.3
-    });
-
-    const text = response.choices[0].message.content;
-    let recipe = {};
-    try { recipe = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]); } catch {}
+    const recipe = await analyzeFramesMultiPass(frames, profile);
     recipe.image = 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
-
     cleanup(videoPath, frames);
     res.json({ recipe });
   } catch (err) {
