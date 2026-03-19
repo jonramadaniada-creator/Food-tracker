@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const axios = require('axios');
+const { randomUUID } = require('crypto');
 const ffmpegPath = require('ffmpeg-static');
 const YTDlpWrap = require('yt-dlp-wrap').default;
 const Groq = require('groq-sdk');
@@ -23,6 +24,32 @@ const USDA_KEY = process.env.USDA_API_KEY;
 const upload = multer({ dest: '/tmp/uploads/' });
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+// ── Session store for frames (in-memory, auto-expire 1hr) ──
+const sessions = new Map();
+function createSession(frames) {
+  const id = randomUUID();
+  sessions.set(id, { frames, created: Date.now() });
+  // Auto-cleanup after 1 hour
+  setTimeout(() => sessions.delete(id), 60 * 60 * 1000);
+  return id;
+}
+// Serve individual frame
+app.get('/api/session/:id/frame/:n', (req, res) => {
+  const session = sessions.get(req.params.id);
+  if (!session) return res.status(404).send('Session expired');
+  const idx = parseInt(req.params.n);
+  const framePath = session.frames[idx];
+  if (!framePath || !fs.existsSync(framePath)) return res.status(404).send('Frame not found');
+  res.set('Content-Type', 'image/jpeg');
+  res.sendFile(framePath);
+});
+// List frames in session
+app.get('/api/session/:id/frames', (req, res) => {
+  const session = sessions.get(req.params.id);
+  if (!session) return res.status(404).json({ error: 'Session expired' });
+  res.json({ count: session.frames.length });
+});
 
 // ── yt-dlp ──
 const ytDlpBinaryPath = path.join('/tmp', 'yt-dlp');
@@ -58,16 +85,14 @@ async function extractFrames(videoPath) {
   });
 }
 
-function cleanup(...paths) {
-  paths.flat().forEach(p => { try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch {} });
+function cleanup(videoPath) {
+  try { if (videoPath && fs.existsSync(videoPath)) fs.unlinkSync(videoPath); } catch {}
 }
 
-// ── USDA FoodData Central lookup ──
-
-// Nutrient IDs in USDA database
+// ── USDA nutrient IDs ──
 const NUTRIENT_IDS = {
   calories: 1008, protein: 1003, fat: 1004, carbohydrates: 1005,
-  fiber: 1079, sugar: 2000, sodium: 1093, saturatedFat: 1258,
+  fiber: 1079, sugar: 1063, sodium: 1093, saturatedFat: 1258,
   vitaminA: 1106, vitaminB1: 1165, vitaminB2: 1166, vitaminB3: 1167,
   vitaminB5: 1170, vitaminB6: 1175, vitaminB7: 1176, vitaminB9: 1177,
   vitaminB12: 1178, vitaminC: 1162, vitaminD: 1114, vitaminE: 1109,
@@ -77,7 +102,6 @@ const NUTRIENT_IDS = {
   molybdenum: 1102, fluoride: 1099
 };
 
-// Standard RDI values (adult 2000 kcal)
 const STANDARD_RDI = {
   calories: 2000, protein: 50, fat: 78, carbohydrates: 275, fiber: 28,
   sugar: 50, sodium: 2300, saturatedFat: 20,
@@ -90,36 +114,22 @@ const STANDARD_RDI = {
   molybdenum: 45, fluoride: 4
 };
 
-// Calculate personalized RDI based on profile
 function getPersonalizedRDI(profile) {
   if (!profile) return STANDARD_RDI;
   const age = parseInt(profile.age) || 25;
   const weight = parseFloat(profile.weight) || 70;
   const height = parseFloat(profile.height) || 175;
   const isMale = profile.sex === 'male';
-
-  // Mifflin-St Jeor BMR
-  const bmr = isMale
-    ? 10 * weight + 6.25 * height - 5 * age + 5
-    : 10 * weight + 6.25 * height - 5 * age - 161;
-
-  const activityMultipliers = {
-    'sedentary': 1.2, 'lightly active': 1.375,
-    'moderately active': 1.55, 'very active': 1.725, 'extremely active': 1.9
-  };
-  const tdee = bmr * (activityMultipliers[profile.activity] || 1.55);
-
-  // Adjust protein for training
-  const proteinMultiplier = ['weightlifting', 'calisthenics', 'mixed'].includes(profile.training) ? 2.0 : 1.6;
-  const protein = Math.round(weight * proteinMultiplier);
-
+  const bmr = isMale ? 10 * weight + 6.25 * height - 5 * age + 5 : 10 * weight + 6.25 * height - 5 * age - 161;
+  const mults = { 'sedentary': 1.2, 'lightly active': 1.375, 'moderately active': 1.55, 'very active': 1.725, 'extremely active': 1.9 };
+  const tdee = bmr * (mults[profile.activity] || 1.55);
+  const proteinMult = ['weightlifting', 'calisthenics', 'mixed'].includes(profile.training) ? 2.0 : 1.6;
   return {
     ...STANDARD_RDI,
     calories: Math.round(tdee),
-    protein,
+    protein: Math.round(weight * proteinMult),
     fat: Math.round(tdee * 0.25 / 9),
     carbohydrates: Math.round(tdee * 0.45 / 4),
-    // Scale vitamins/minerals by caloric needs vs 2000 baseline
     vitaminA: isMale ? 900 : 700,
     vitaminC: isMale ? 90 : 75,
     iron: isMale ? 8 : (age < 51 ? 18 : 8),
@@ -128,79 +138,70 @@ function getPersonalizedRDI(profile) {
   };
 }
 
-// Convert ingredient quantity string to grams
+// ── FIXED gram parser ──
 function parseIngredientGrams(ingredientStr) {
-  const s = ingredientStr.toLowerCase();
+  const s = ingredientStr.toLowerCase().trim();
 
-  // Extract number (including fractions like 1/2)
-  const numMatch = s.match(/(\d+(?:\.\d+)?(?:\/\d+)?)/);
-  if (!numMatch) return { name: ingredientStr, grams: 100 };
+  // Try each unit pattern — look for NUMBER immediately followed by unit
+  const patterns = [
+    { re: /(\d+(?:\.\d+)?)\s*kg/, mult: 1000, max: 5000 },
+    { re: /(\d+(?:\.\d+)?)\s*g(?:rams?)?(?:\s|$|,|\))/, mult: 1, max: 2000 },
+    { re: /(\d+(?:\.\d+)?)\s*lbs?(?:\s|$)/, mult: 454, max: 3000 },
+    { re: /(\d+(?:\.\d+)?)\s*oz(?:\s|$)/, mult: 28, max: 1500 },
+    { re: /(\d+(?:\.\d+)?)\s*(?:cups?|c\.)/, mult: 240, max: 1500 },
+    { re: /(\d+(?:\.\d+)?)\s*(?:tbsp|tablespoons?)/, mult: 15, max: 300 },
+    { re: /(\d+(?:\.\d+)?)\s*(?:tsp|teaspoons?)/, mult: 5, max: 100 },
+    { re: /(\d+(?:\.\d+)?)\s*(?:liters?|l\b)/, mult: 1000, max: 3000 },
+    { re: /(\d+(?:\.\d+)?)\s*(?:ml|milliliters?)/, mult: 1, max: 2000 },
+  ];
 
-  let qty = numMatch[1].includes('/') ? eval(numMatch[1]) : parseFloat(numMatch[1]);
+  for (const { re, mult, max } of patterns) {
+    const m = s.match(re);
+    if (m) return Math.min(parseFloat(m[1]) * mult, max);
+  }
 
-  // Unit conversions to grams
-  if (s.match(/\bkg\b/)) return { name: ingredientStr, grams: qty * 1000 };
-  if (s.match(/\bg\b|\bgrams?\b/)) return { name: ingredientStr, grams: qty };
-  if (s.match(/\blb\b|\bpound/)) return { name: ingredientStr, grams: qty * 454 };
-  if (s.match(/\boz\b|\bounce/)) return { name: ingredientStr, grams: qty * 28 };
-  if (s.match(/\bcup/)) return { name: ingredientStr, grams: qty * 240 };
-  if (s.match(/\btbsp\b|\btablespoon/)) return { name: ingredientStr, grams: qty * 15 };
-  if (s.match(/\btsp\b|\bteaspoon/)) return { name: ingredientStr, grams: qty * 5 };
-  if (s.match(/\bml\b|\bmilliliter/)) return { name: ingredientStr, grams: qty };
-  if (s.match(/\bl\b|\bliter/)) return { name: ingredientStr, grams: qty * 1000 };
-  if (s.match(/\bslice/)) return { name: ingredientStr, grams: qty * 30 };
-  if (s.match(/\bclove/)) return { name: ingredientStr, grams: qty * 5 };
-  if (s.match(/\bpiece|\beach|\bwhole/)) return { name: ingredientStr, grams: qty * 100 };
-
-  // No unit — assume it's a count, use 100g per item as fallback
-  return { name: ingredientStr, grams: qty * 100 };
+  // Count-based (pieces, items, cloves etc)
+  const countMatch = s.match(/(\d+(?:\.\d+)?)/);
+  if (countMatch) {
+    const qty = parseFloat(countMatch[1]);
+    if (s.includes('clove')) return Math.min(qty * 5, 50);
+    if (s.includes('slice')) return Math.min(qty * 30, 200);
+    if (s.includes('egg')) return Math.min(qty * 55, 330);
+    return Math.min(qty * 80, 400); // generic item ~80g each, max 400g
+  }
+  return 100;
 }
 
-// Search USDA for a food and get nutrients per 100g
+// ── USDA lookup ──
 async function lookupUSDA(ingredientStr) {
   if (!USDA_KEY) return null;
   try {
-    // Clean up ingredient string for search (remove quantities)
     const searchQuery = ingredientStr
-      .replace(/[\d\/\.]+\s*(kg|g|lb|oz|cup|tbsp|tsp|ml|l|slice|clove|piece|each|whole|grams?|pounds?|ounces?|tablespoons?|teaspoons?|liters?|milliliters?)\b/gi, '')
-      .replace(/[\d\/\.]+/g, '')
-      .trim();
-
+      .replace(/(\d+(?:\.\d+)?)\s*(kg|g|lb|oz|cup|tbsp|tsp|ml|l|grams?|pounds?|ounces?|tablespoons?|teaspoons?|liters?|milliliters?)\b/gi, '')
+      .replace(/[\d\/\.]+/g, '').replace(/\(.*?\)/g, '').trim();
     if (!searchQuery || searchQuery.length < 2) return null;
 
     const res = await axios.get('https://api.nal.usda.gov/fdc/v1/foods/search', {
-      params: {
-        query: searchQuery,
-        api_key: USDA_KEY,
-        dataType: 'SR Legacy,Foundation',
-        pageSize: 1
-      },
+      params: { query: searchQuery, api_key: USDA_KEY, dataType: 'SR Legacy,Foundation', pageSize: 1 },
       timeout: 5000
     });
-
     const food = res.data.foods?.[0];
     if (!food) return null;
-
-    // Extract nutrients per 100g
     const nutrients = {};
     for (const [key, id] of Object.entries(NUTRIENT_IDS)) {
-      const nutrient = food.foodNutrients?.find(n => n.nutrientId === id);
-      nutrients[key] = nutrient?.value || 0;
+      const n = food.foodNutrients?.find(n => n.nutrientId === id);
+      nutrients[key] = n?.value || 0;
     }
     return nutrients;
-  } catch (err) {
-    console.error(`USDA lookup failed for "${ingredientStr}":`, err.message);
-    return null;
-  }
+  } catch { return null; }
 }
 
-// Calculate full nutrition from ingredients using USDA data
 async function calculateNutritionFromUSDA(ingredients, servings, profile) {
   const rdi = getPersonalizedRDI(profile);
   const totals = Object.fromEntries(Object.keys(NUTRIENT_IDS).map(k => [k, 0]));
 
   await Promise.all(ingredients.map(async (ing) => {
-    const { grams } = parseIngredientGrams(ing);
+    const grams = parseIngredientGrams(ing);
     const nutrients = await lookupUSDA(ing);
     if (!nutrients) return;
     for (const key of Object.keys(NUTRIENT_IDS)) {
@@ -208,71 +209,53 @@ async function calculateNutritionFromUSDA(ingredients, servings, profile) {
     }
   }));
 
-  // Per serving
-  const perServing = {};
-  for (const key of Object.keys(NUTRIENT_IDS)) {
-    perServing[key] = Math.round((totals[key] / servings) * 10) / 10;
-  }
+  const s = Math.max(1, servings);
 
-  // Format into the nutrition structure
-  const fmt = (key, unit) => ({
-    amount: perServing[key],
-    unit,
-    rdi: Math.round((perServing[key] / rdi[key]) * 100)
-  });
+  // Sanity check: if calories per serving > 4000, something is wrong — scale down
+  const caloriesPerServing = totals.calories / s;
+  const scaleFactor = caloriesPerServing > 4000 ? 4000 / caloriesPerServing : 1;
+
+  const fmt = (key, unit) => {
+    const amount = Math.round((totals[key] / s) * scaleFactor * 10) / 10;
+    return { amount, unit, rdi: Math.min(Math.round((amount / (rdi[key] || 1)) * 100), 999) };
+  };
 
   return {
     perServing: {
       macros: {
-        calories: fmt('calories', 'kcal'),
-        protein: fmt('protein', 'g'),
-        carbohydrates: fmt('carbohydrates', 'g'),
-        fat: fmt('fat', 'g'),
-        saturatedFat: fmt('saturatedFat', 'g'),
-        fiber: fmt('fiber', 'g'),
-        sugar: fmt('sugar', 'g'),
-        sodium: fmt('sodium', 'mg'),
+        calories: fmt('calories', 'kcal'), protein: fmt('protein', 'g'),
+        carbohydrates: fmt('carbohydrates', 'g'), fat: fmt('fat', 'g'),
+        saturatedFat: fmt('saturatedFat', 'g'), fiber: fmt('fiber', 'g'),
+        sugar: fmt('sugar', 'g'), sodium: fmt('sodium', 'mg'),
       },
       vitamins: {
-        vitaminA: fmt('vitaminA', 'µg'),
-        vitaminB1: fmt('vitaminB1', 'mg'),
-        vitaminB2: fmt('vitaminB2', 'mg'),
-        vitaminB3: fmt('vitaminB3', 'mg'),
-        vitaminB5: fmt('vitaminB5', 'mg'),
-        vitaminB6: fmt('vitaminB6', 'mg'),
-        vitaminB7: fmt('vitaminB7', 'µg'),
-        vitaminB9: fmt('vitaminB9', 'µg'),
-        vitaminB12: fmt('vitaminB12', 'µg'),
-        vitaminC: fmt('vitaminC', 'mg'),
-        vitaminD: fmt('vitaminD', 'µg'),
-        vitaminE: fmt('vitaminE', 'mg'),
+        vitaminA: fmt('vitaminA', 'µg'), vitaminB1: fmt('vitaminB1', 'mg'),
+        vitaminB2: fmt('vitaminB2', 'mg'), vitaminB3: fmt('vitaminB3', 'mg'),
+        vitaminB5: fmt('vitaminB5', 'mg'), vitaminB6: fmt('vitaminB6', 'mg'),
+        vitaminB7: fmt('vitaminB7', 'µg'), vitaminB9: fmt('vitaminB9', 'µg'),
+        vitaminB12: fmt('vitaminB12', 'µg'), vitaminC: fmt('vitaminC', 'mg'),
+        vitaminD: fmt('vitaminD', 'µg'), vitaminE: fmt('vitaminE', 'mg'),
         vitaminK: fmt('vitaminK', 'µg'),
       },
       minerals: {
-        calcium: fmt('calcium', 'mg'),
-        iron: fmt('iron', 'mg'),
-        magnesium: fmt('magnesium', 'mg'),
-        phosphorus: fmt('phosphorus', 'mg'),
-        potassium: fmt('potassium', 'mg'),
-        zinc: fmt('zinc', 'mg'),
-        copper: fmt('copper', 'mg'),
-        manganese: fmt('manganese', 'mg'),
-        selenium: fmt('selenium', 'µg'),
-        iodine: fmt('iodine', 'µg'),
-        chromium: fmt('chromium', 'µg'),
-        molybdenum: fmt('molybdenum', 'µg'),
+        calcium: fmt('calcium', 'mg'), iron: fmt('iron', 'mg'),
+        magnesium: fmt('magnesium', 'mg'), phosphorus: fmt('phosphorus', 'mg'),
+        potassium: fmt('potassium', 'mg'), zinc: fmt('zinc', 'mg'),
+        copper: fmt('copper', 'mg'), manganese: fmt('manganese', 'mg'),
+        selenium: fmt('selenium', 'µg'), iodine: fmt('iodine', 'µg'),
+        chromium: fmt('chromium', 'µg'), molybdenum: fmt('molybdenum', 'µg'),
         fluoride: fmt('fluoride', 'mg'),
       }
     }
   };
 }
 
-// ── Multi-pass video analysis (ingredients + steps only, no nutrition) ──
+// ── Multi-pass video analysis ──
 async function analyzeFramesMultiPass(frames) {
   const batches = [];
   for (let i = 0; i < frames.length; i += 5) batches.push(frames.slice(i, i + 5));
 
-  const ingredientLists = await Promise.all(batches.map(async (batch, idx) => {
+  const results = await Promise.all(batches.map(async (batch, idx) => {
     const imageMessages = batch.map(f => ({
       type: 'image_url',
       image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(f).toString('base64')}` }
@@ -282,82 +265,64 @@ async function analyzeFramesMultiPass(frames) {
       messages: [{ role: 'user', content: [
         ...imageMessages,
         { type: 'text', text: `Frames ${idx * 5 + 1}-${idx * 5 + batch.length} of a cooking video.
-List EVERY ingredient visible, including anything shown briefly. Include quantities if visible (e.g. "900g potatoes", "2 tbsp olive oil").
-Note any cooking steps you see.
-Return ONLY JSON:
-{"ingredients": ["quantity ingredient", "..."], "steps": ["action seen", "..."], "notes": "other observations"}` }
+List EVERY ingredient visible including briefly shown ones. Include quantities (e.g. "900g potatoes", "2 tbsp olive oil", "400g chicken").
+Note cooking steps seen.
+Return ONLY JSON: {"ingredients":["qty ingredient"],"steps":["action"],"notes":"observations"}` }
       ]}],
-      max_tokens: 800,
-      temperature: 0.2
+      max_tokens: 800, temperature: 0.2
     });
     try { return JSON.parse(response.choices[0].message.content.match(/\{[\s\S]*\}/)?.[0]); }
     catch { return { ingredients: [], steps: [], notes: '' }; }
   }));
 
-  const allIngredients = [...new Set(ingredientLists.flatMap(r => r?.ingredients || []))];
-  const allSteps = ingredientLists.flatMap(r => r?.steps || []);
-  const allNotes = ingredientLists.map(r => r?.notes || '').filter(Boolean).join(' ');
+  const allIngredients = [...new Set(results.flatMap(r => r?.ingredients || []))];
+  const allSteps = results.flatMap(r => r?.steps || []);
+  const allNotes = results.map(r => r?.notes || '').filter(Boolean).join(' ');
 
-  // Final Groq call: compile recipe metadata only (no nutrition — USDA handles that)
   const finalResponse = await groq.chat.completions.create({
     model: 'llama-3.3-70b-versatile',
-    messages: [{ role: 'user', content: `You are a chef. Based on observations from a cooking video, compile the recipe.
+    messages: [{ role: 'user', content: `You are a chef. Compile a recipe from these cooking video observations.
 
 OBSERVED INGREDIENTS:
 ${allIngredients.join('\n')}
 
-OBSERVED STEPS:
-${allSteps.join('\n')}
-
+STEPS: ${allSteps.join(' | ')}
 NOTES: ${allNotes}
 
 Rules:
-- Merge duplicates (prefer the version with a quantity)
-- Estimate servings from total quantities
-- servingWeight = total estimated cooked weight in grams / servings
+- Merge duplicates — if "potatoes" and "900g potatoes" both appear, use "900g potatoes"
+- Do NOT multiply quantities — each ingredient appears once in the final list
+- Estimate total servings from quantities shown
+- servingWeight = total estimated cooked weight (g) / servings
 
 Return ONLY valid JSON (no markdown):
-{
-  "title": "Recipe Name",
-  "description": "One sentence description",
-  "ingredients": ["900g potatoes", "400g chicken breast", "3 tbsp olive oil"],
-  "steps": ["Step 1", "Step 2"],
-  "cookTime": 25,
-  "servings": 4,
-  "servingWeight": 320,
-  "difficulty": "easy",
-  "cost": 8.50
-}` }],
-    max_tokens: 1500,
-    temperature: 0.2
+{"title":"","description":"","ingredients":["900g potatoes","400g chicken"],"steps":["Step 1"],"cookTime":25,"servings":4,"servingWeight":320,"difficulty":"easy","cost":8.50}` }],
+    max_tokens: 1500, temperature: 0.2
   });
 
-  const text = finalResponse.choices[0].message.content;
-  let recipe = {};
-  try { recipe = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]); } catch {}
-  return recipe;
+  try { return JSON.parse(finalResponse.choices[0].message.content.match(/\{[\s\S]*\}/)?.[0]) || {}; }
+  catch { return {}; }
 }
 
 // ── Pick best frame ──
 async function pickBestFrame(frames) {
   try {
-    const step = Math.floor(frames.length / 5);
+    const step = Math.max(1, Math.floor(frames.length / 5));
     const candidates = [0, 1, 2, 3, 4].map(i => frames[Math.min(i * step, frames.length - 1)]);
-    const imageMessages = candidates.map((f, i) => ([
+    const msgs = candidates.map((f, i) => ([
       { type: 'text', text: `Frame ${i + 1}:` },
       { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(f).toString('base64')}` } }
     ])).flat();
-    const response = await groq.chat.completions.create({
+    const res = await groq.chat.completions.create({
       model: 'meta-llama/llama-4-scout-17b-16e-instruct',
-      messages: [{ role: 'user', content: [...imageMessages, { type: 'text', text: `Which of these 5 frames shows the most appetizing finished dish? Reply ONLY: {"frame": 3}` }] }],
-      max_tokens: 50, temperature: 0
+      messages: [{ role: 'user', content: [...msgs, { type: 'text', text: 'Which frame shows the most appetizing finished plated dish? Reply ONLY: {"frame":3}' }] }],
+      max_tokens: 20, temperature: 0
     });
-    const match = response.choices[0].message.content.match(/"frame"\s*:\s*(\d+)/);
-    const idx = Math.max(0, Math.min((match ? parseInt(match[1]) : 5) - 1, 4));
-    return `data:image/jpeg;base64,${fs.readFileSync(candidates[idx]).toString('base64')}`;
-  } catch {
-    return 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
-  }
+    const m = res.choices[0].message.content.match(/"frame"\s*:\s*(\d+)/);
+    const idx = Math.max(0, Math.min((m ? parseInt(m[1]) : 5) - 1, 4));
+    // Return the index into the original frames array
+    return idx * step;
+  } catch { return frames.length - 1; }
 }
 
 // ── Shared analyze handler ──
@@ -367,36 +332,42 @@ async function analyzeVideo(videoPath, profile, res) {
     frames = await extractFrames(videoPath);
     if (!frames.length) throw new Error('No frames extracted');
 
-    const [recipe, image] = await Promise.all([
+    const [recipe, bestFrameIdx] = await Promise.all([
       analyzeFramesMultiPass(frames),
       pickBestFrame(frames)
     ]);
 
-    recipe.image = image;
+    // Store frames in session for frontend frame picker
+    const sessionId = createSession(frames);
+    recipe.sessionId = sessionId;
+    recipe.frameCount = frames.length;
+    recipe.bestFrame = bestFrameIdx;
 
-    // Use USDA for accurate nutrition if API key is set, otherwise fall back to Groq estimate
+    // Set image to best frame URL (served from session endpoint)
+    recipe.image = null; // frontend will use session endpoint
+
+    // USDA nutrition
     if (USDA_KEY && recipe.ingredients?.length) {
       try {
         recipe.nutrition = await calculateNutritionFromUSDA(recipe.ingredients, recipe.servings || 4, profile);
         recipe.nutritionSource = 'usda';
       } catch (err) {
-        console.error('USDA nutrition failed:', err.message);
+        console.error('USDA failed:', err.message);
         recipe.nutritionSource = 'estimated';
       }
     } else {
       recipe.nutritionSource = 'estimated';
     }
 
-    cleanup(videoPath, frames);
+    cleanup(videoPath);
     res.json({ recipe });
   } catch (err) {
-    cleanup(videoPath, frames);
+    cleanup(videoPath);
     console.error(err.message);
     res.status(500).json({ error: err.message });
   }
 }
 
-// ── Routes ──
 app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   let profile = null;
@@ -413,7 +384,6 @@ app.post('/api/analyze-video', async (req, res) => {
     const videoPath = await downloadVideo(url);
     await analyzeVideo(videoPath, profile, res);
   } catch (err) {
-    console.error(err.message);
     res.status(500).json({ error: err.message });
   }
 });
@@ -438,11 +408,8 @@ Generate 2 recipe ideas. Return ONLY a valid JSON array (no markdown):
       'https://images.unsplash.com/photo-1504674900769-7f88ad4a5c20?w=400&h=300&fit=crop',
     ];
     res.json({ recipes: recipes.map((r, i) => ({ ...r, image: images[i % images.length] })) });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', groq: !!process.env.GROQ_API_KEY, usda: !!USDA_KEY }));
-
 app.listen(PORT, '0.0.0.0', () => console.log(`✅ RecipeBox running on port ${PORT}`));
