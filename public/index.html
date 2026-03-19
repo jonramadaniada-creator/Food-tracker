@@ -333,13 +333,13 @@ function buildBannerOrForm() {
   return `
     <div class="video-card">
       <div class="video-card-header">
-        <h3>Add from Video / Link</h3>
+        <h3>Add from Video</h3>
         <button onclick="closeSaveRecipe()">✕</button>
       </div>
-      <span class="video-label">Instagram / TikTok / YouTube Link</span>
-      <input class="video-input" id="videoInput" type="text" placeholder="https://..." value="">
-      <button class="btn-green" id="analyzeBtn" onclick="handleVideoInput()" ${loading ? 'disabled' : ''}>
-        ${loading ? 'Analyzing...' : 'Analyze Video'}
+      <span class="video-label">Upload a cooking video from your device (Reel, TikTok, etc.)</span>
+      <input class="video-input" id="videoFileInput" type="file" accept="video/*" style="padding:8px;cursor:pointer">
+      <button class="btn-green" onclick="handleFileUpload()" ${loading ? 'disabled' : ''}>
+        ${loading ? '⏳ Analyzing...' : '🔍 Analyze Video'}
       </button>
     </div>`;
 }
@@ -493,17 +493,18 @@ function handleAddIngredient() {
   render();
 }
 
-async function handleVideoInput() {
-  const url = document.getElementById('videoInput').value.trim();
-  if (!url) { notify('Please enter a video URL', 'error'); return; }
+async function handleFileUpload() {
+  const fileInput = document.getElementById('videoFileInput');
+  if (!fileInput || !fileInput.files[0]) { notify('Please select a video file', 'error'); return; }
   loading = true;
   statusMsg = '📹 Analyzing video with AI...';
   render();
   try {
-    const res = await fetch(`${API_URL}/api/analyze-video`, {
+    const formData = new FormData();
+    formData.append('video', fileInput.files[0]);
+    const res = await fetch(`${API_URL}/api/analyze-upload`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ url })
+      body: formData
     });
     if (!res.ok) throw new Error(`Server error ${res.status}`);
     const data = await res.json();
@@ -516,7 +517,7 @@ async function handleVideoInput() {
     }
   } catch (e) {
     statusMsg = '';
-    notify('Error connecting to server', 'error');
+    notify('Error: ' + e.message, 'error');
   }
   loading = false;
   render();
