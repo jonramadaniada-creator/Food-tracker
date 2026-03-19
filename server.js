@@ -6,6 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const ffmpegPath = require('ffmpeg-static');
+const YTDlpWrap = require('yt-dlp-wrap').default;
 const Groq = require('groq-sdk');
 
 dotenv.config();
@@ -21,6 +22,24 @@ const upload = multer({ dest: '/tmp/uploads/' });
 
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+// ── yt-dlp setup ──
+const ytDlpBinaryPath = path.join('/tmp', 'yt-dlp');
+let ytDlp;
+async function getYtDlp() {
+  if (!ytDlp) {
+    await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
+    ytDlp = new YTDlpWrap(ytDlpBinaryPath);
+  }
+  return ytDlp;
+}
+
+async function downloadVideo(url) {
+  const videoPath = path.join('/tmp', `video_${Date.now()}.mp4`);
+  const yt = await getYtDlp();
+  await yt.execPromise([url, '-f', 'mp4/best', '--merge-output-format', 'mp4', '-o', videoPath]);
+  return videoPath;
+}
 
 // ── Frame extraction ──
 async function extractFrames(videoPath) {
@@ -60,17 +79,29 @@ function buildRecipePrompt(profile) {
   return `You are a professional nutritionist and chef analyzing frames from a fast-paced cooking video (Instagram Reel / TikTok).
 Frames are sampled throughout the full video — look for text overlays, ingredients shown briefly, cooking actions, and the final dish.
 
+CRITICAL INGREDIENT RULES:
+- List EVERY ingredient you see at any point in the video, even if shown for 1 second
+- Include ALL vegetables, spices, oils, sauces, garnishes — nothing is too small to include
+- For each ingredient, estimate the weight/quantity as accurately as possible from what you see
+- If you see a 1kg bag of potatoes and most is used, write "900g potatoes" not just "potatoes"
+
+SERVING CALCULATION:
+- Count how many servings the recipe makes (look at how many plates/portions are shown)
+- Calculate total recipe weight = sum of all main ingredients
+- servingWeight = total recipe weight / number of servings (in grams)
+- ALL nutrition values must be for exactly 1 serving (total / servings)
+
 ${profileInfo}
 
-Extract the complete recipe AND full nutritional breakdown per serving.
 Return ONLY valid JSON (no extra text, no markdown):
 {
   "title": "Recipe Name",
   "description": "One sentence description",
-  "ingredients": ["2 chicken breasts", "1 cup flour"],
+  "ingredients": ["900g potatoes", "2 chicken breasts (approx 400g)", "3 tbsp olive oil"],
   "steps": ["Step 1", "Step 2"],
   "cookTime": 25,
-  "servings": 2,
+  "servings": 4,
+  "servingWeight": 320,
   "difficulty": "easy",
   "cost": 8.50,
   "nutrition": {
@@ -152,6 +183,45 @@ app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
           ]
         }
       ],
+      max_tokens: 4000,
+      temperature: 0.3
+    });
+
+    const text = response.choices[0].message.content;
+    let recipe = {};
+    try { recipe = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]); } catch {}
+    recipe.image = 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
+
+    cleanup(videoPath, frames);
+    res.json({ recipe });
+  } catch (err) {
+    cleanup(videoPath, frames);
+    console.error(err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── URL analyze (Instagram / TikTok) ──
+app.post('/api/analyze-video', async (req, res) => {
+  const { url } = req.body;
+  if (!url || (!url.startsWith('http://') && !url.startsWith('https://'))) {
+    return res.status(400).json({ error: 'Valid URL required' });
+  }
+
+  let videoPath, frames = [];
+  try {
+    videoPath = await downloadVideo(url);
+    frames = await extractFrames(videoPath);
+    if (!frames.length) throw new Error('No frames extracted');
+
+    const imageMessages = frames.map(f => ({
+      type: 'image_url',
+      image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(f).toString('base64')}` }
+    }));
+
+    const response = await groq.chat.completions.create({
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{ role: 'user', content: [...imageMessages, { type: 'text', text: buildRecipePrompt(req.body.profile ? JSON.parse(req.body.profile) : null) }] }],
       max_tokens: 4000,
       temperature: 0.3
     });
