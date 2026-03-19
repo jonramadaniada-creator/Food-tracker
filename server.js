@@ -221,7 +221,41 @@ Return ONLY valid JSON (no extra text, no markdown):
   return recipe;
 }
 
-// ── Upload + analyze ──
+// ── Pick the best "finished dish" frame from the video ──
+async function pickBestFrame(frames) {
+  try {
+    const imageMessages = frames.map((f, i) => ([
+      { type: 'text', text: `Frame ${i + 1}:` },
+      { type: 'image_url', image_url: { url: `data:image/jpeg;base64,${fs.readFileSync(f).toString('base64')}` } }
+    ])).flat();
+
+    const response = await groq.chat.completions.create({
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [{
+        role: 'user',
+        content: [
+          ...imageMessages,
+          {
+            type: 'text',
+            text: `Look at these ${frames.length} frames from a cooking video. Which frame number shows the most appetizing, fully plated/finished dish? 
+Reply with ONLY a JSON object like: {"frame": 3}`
+          }
+        ]
+      }],
+      max_tokens: 50,
+      temperature: 0
+    });
+
+    const text = response.choices[0].message.content;
+    const match = text.match(/"frame"\s*:\s*(\d+)/);
+    const frameIdx = match ? parseInt(match[1]) - 1 : frames.length - 1;
+    const safeIdx = Math.max(0, Math.min(frameIdx, frames.length - 1));
+    return `data:image/jpeg;base64,${fs.readFileSync(frames[safeIdx]).toString('base64')}`;
+  } catch (err) {
+    console.error('Frame picker failed:', err.message);
+    return 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
+  }
+}
 app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   let profile = null;
@@ -231,8 +265,11 @@ app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
   try {
     frames = await extractFrames(videoPath);
     if (!frames.length) throw new Error('No frames extracted');
-    const recipe = await analyzeFramesMultiPass(frames, profile);
-    recipe.image = 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
+    const [recipe, image] = await Promise.all([
+      analyzeFramesMultiPass(frames, profile),
+      pickBestFrame(frames)
+    ]);
+    recipe.image = image;
     cleanup(videoPath, frames);
     res.json({ recipe });
   } catch (err) {
@@ -255,8 +292,11 @@ app.post('/api/analyze-video', async (req, res) => {
     videoPath = await downloadVideo(url);
     frames = await extractFrames(videoPath);
     if (!frames.length) throw new Error('No frames extracted');
-    const recipe = await analyzeFramesMultiPass(frames, profile);
-    recipe.image = 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
+    const [recipe, image] = await Promise.all([
+      analyzeFramesMultiPass(frames, profile),
+      pickBestFrame(frames)
+    ]);
+    recipe.image = image;
     cleanup(videoPath, frames);
     res.json({ recipe });
   } catch (err) {
