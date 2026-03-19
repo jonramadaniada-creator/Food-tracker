@@ -5,6 +5,8 @@ const axios = require('axios');
 const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const ffmpegPath = require('ffmpeg-static');
+const YTDlpWrap = require('yt-dlp-wrap').default;
 
 dotenv.config();
 
@@ -15,6 +17,53 @@ app.use(express.json({ limit: '50mb' }));
 const PORT = process.env.PORT || 3001;
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
+// ── Serve frontend ──
+app.use(express.static(path.join(__dirname, 'public')));
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
+
+// ── yt-dlp setup ──
+const ytDlpBinaryPath = path.join('/tmp', 'yt-dlp');
+let ytDlp;
+
+async function getYtDlp() {
+  if (!ytDlp) {
+    await YTDlpWrap.downloadFromGithub(ytDlpBinaryPath);
+    ytDlp = new YTDlpWrap(ytDlpBinaryPath);
+  }
+  return ytDlp;
+}
+
+// ── Helpers ──
+async function downloadVideo(url) {
+  const videoPath = path.join('/tmp', `video_${Date.now()}.mp4`);
+  const yt = await getYtDlp();
+  await yt.execPromise([
+    url,
+    '-f', 'best[ext=mp4][height<=480]',
+    '-o', videoPath
+  ]);
+  return videoPath;
+}
+
+async function extractFrames(videoPath) {
+  const frameDir = path.join('/tmp', `frames_${Date.now()}`);
+  fs.mkdirSync(frameDir, { recursive: true });
+  return new Promise((resolve, reject) => {
+    exec(`"${ffmpegPath}" -i "${videoPath}" -vf "fps=0.2,scale=640:-1" "${frameDir}/frame_%03d.jpg"`, (err) => {
+      if (err) { reject(new Error('Failed to extract frames')); return; }
+      const frames = fs.readdirSync(frameDir)
+        .filter(f => f.endsWith('.jpg'))
+        .slice(0, 8)
+        .map(f => path.join(frameDir, f));
+      resolve(frames);
+    });
+  });
+}
+
+function cleanup(...paths) {
+  paths.flat().forEach(p => { try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch {} });
+}
+
 async function callGemini(parts) {
   const res = await axios.post(
     `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`,
@@ -23,51 +72,24 @@ async function callGemini(parts) {
   return res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
-function isYouTube(url) {
-  return url.includes('youtube.com') || url.includes('youtu.be');
-}
-
-function cleanup(...paths) {
-  paths.flat().forEach(p => { try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch {} });
-}
-
-async function downloadAndExtractFrames(url) {
-  const videoPath = path.join('/tmp', `video_${Date.now()}.mp4`);
-  const frameDir = path.join('/tmp', `frames_${Date.now()}`);
-  fs.mkdirSync(frameDir, { recursive: true });
-
-  // Download
-  await new Promise((resolve, reject) => {
-    exec(`yt-dlp -f "best[ext=mp4][height<=480]/best[height<=480]/best" -o "${videoPath}" "${url}"`, 
-      { timeout: 60000 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`Download failed: ${stderr}`));
-      else resolve();
-    });
-  });
-
-  // Extract frames (1 every 5 seconds, max 8)
-  await new Promise((resolve, reject) => {
-    exec(`ffmpeg -i "${videoPath}" -vf "fps=0.2,scale=640:-1" "${frameDir}/frame_%03d.jpg"`,
-      { timeout: 30000 }, (err) => {
-      if (err) reject(new Error('Frame extraction failed'));
-      else resolve();
-    });
-  });
-
-  const frames = fs.readdirSync(frameDir)
-    .filter(f => f.endsWith('.jpg'))
-    .slice(0, 8)
-    .map(f => path.join(frameDir, f));
-
-  return { videoPath, frames };
-}
-
-// Analyze video
+// ── API Routes ──
 app.post('/api/analyze-video', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
-  const recipePrompt = `Analyze this cooking video and extract the recipe. Return ONLY valid JSON:
+  let videoPath, frames = [];
+  try {
+    videoPath = await downloadVideo(url);
+    frames = await extractFrames(videoPath);
+    if (!frames.length) throw new Error('No frames extracted');
+
+    const imageParts = frames.map(f => ({
+      inline_data: { mime_type: 'image/jpeg', data: fs.readFileSync(f).toString('base64') }
+    }));
+
+    const text = await callGemini([
+      ...imageParts,
+      { text: `Analyze these cooking video frames and extract the recipe. Return ONLY valid JSON:
 {
   "title": "Recipe Name",
   "ingredients": ["ingredient 1", "ingredient 2"],
@@ -75,41 +97,22 @@ app.post('/api/analyze-video', async (req, res) => {
   "servings": 4,
   "difficulty": "easy",
   "cost": 8.50
-}`;
-
-  try {
-    let text;
-
-    if (isYouTube(url)) {
-      // YouTube — pass URL directly to Gemini
-      text = await callGemini([
-        { fileData: { mimeType: 'video/mp4', fileUri: url } },
-        { text: recipePrompt }
-      ]);
-    } else {
-      // Instagram / TikTok — download frames first
-      const { videoPath, frames } = await downloadAndExtractFrames(url);
-
-      const imageParts = frames.map(f => ({
-        inline_data: { mime_type: 'image/jpeg', data: fs.readFileSync(f).toString('base64') }
-      }));
-
-      text = await callGemini([...imageParts, { text: recipePrompt }]);
-      cleanup(videoPath, frames);
-    }
+}` }
+    ]);
 
     let recipe = {};
     try { recipe = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]); } catch {}
     recipe.image = 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
 
+    cleanup(videoPath, frames);
     res.json({ recipe });
   } catch (err) {
-    console.error('analyze-video error:', err.message);
+    cleanup(videoPath, frames);
+    console.error(err.message);
     res.status(500).json({ error: err.message });
   }
 });
 
-// Generate recipes from ingredients
 app.post('/api/generate-recipes', async (req, res) => {
   const { ingredients } = req.body;
   if (!ingredients?.length) return res.status(400).json({ error: 'Ingredients required' });
@@ -138,7 +141,7 @@ Generate 2 recipe ideas. Return ONLY a valid JSON array:
     ];
     res.json({ recipes: recipes.map((r, i) => ({ ...r, image: images[i % images.length] })) });
   } catch (err) {
-    console.error('generate-recipes error:', err.message);
+    console.error(err.message);
     res.status(500).json({ error: err.message });
   }
 });
