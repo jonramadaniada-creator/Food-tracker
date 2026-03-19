@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RecipeBox</title>
+<style>
+  * { box-sizing: border-box; -webkit-font-smoothing: antialiased; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'SF Pro Text', sans-serif; background: #f2f2f7; }
+
+  /* ── LAYOUT ── */
+  .shell { display: flex; min-height: 100vh; background: #f2f2f7; }
+
+  /* Sidebar */
+  .sidebar {
+    display: none; width: 220px; flex-shrink: 0;
+    background: #fff; border-right: 1px solid #e8e8ed;
+    flex-direction: column; padding: 28px 0 24px;
+    position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  }
+  .sidebar-logo { display: flex; align-items: center; gap: 10px; padding: 0 20px 28px; font-size: 20px; font-weight: 800; color: #111; letter-spacing: -0.4px; }
+  .sidebar-logo-dot { width: 10px; height: 10px; background: #2a9d5c; border-radius: 50%; }
+  .sidebar-nav { display: flex; flex-direction: column; gap: 2px; padding: 0 12px; flex: 1; }
+  .sidebar-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 12px; border: none; background: none; cursor: pointer; font-size: 14px; font-weight: 500; color: #666; font-family: inherit; text-align: left; width: 100%; transition: background 0.15s, color 0.15s; }
+  .sidebar-item:hover { background: #f5f5f7; color: #111; }
+  .sidebar-item.active { background: #f0faf4; color: #1a7a42; font-weight: 600; }
+  .sidebar-item svg { width: 20px; height: 20px; flex-shrink: 0; }
+  .sidebar-add { margin: 16px 12px 0; display: flex; align-items: center; gap: 10px; padding: 11px 14px; border-radius: 12px; background: linear-gradient(135deg, #ff8c00, #ff5e00); border: none; cursor: pointer; color: #fff; font-size: 14px; font-weight: 600; font-family: inherit; box-shadow: 0 4px 12px rgba(255,100,0,0.3); transition: opacity 0.15s; }
+  .sidebar-add:hover { opacity: 0.9; }
+
+  /* Main */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+  /* Topbar */
+  .topbar { display: none; align-items: center; justify-content: space-between; padding: 20px 32px 0; background: #f2f2f7; position: sticky; top: 0; z-index: 40; }
+  .topbar-title { font-size: 30px; font-weight: 700; letter-spacing: -0.5px; color: #000; }
+  .topbar-right { display: flex; gap: 10px; align-items: center; }
+  .topbar-segment { display: flex; background: #e0e0e6; border-radius: 30px; padding: 3px; }
+  .topbar-seg-btn { padding: 7px 20px; font-size: 14px; font-weight: 500; border-radius: 28px; border: none; background: transparent; cursor: pointer; color: #555; font-family: inherit; transition: all 0.2s; }
+  .topbar-seg-btn.active { background: #fff; color: #000; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .desktop-content { display: none; padding: 20px 32px 40px; flex: 1; }
+
+  /* Mobile header */
+  .mobile-header { padding: 12px 20px 0; background: #f2f2f7; position: sticky; top: 0; z-index: 40; }
+  .mobile-header-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; }
+  .mobile-title { font-size: 34px; font-weight: 700; letter-spacing: -0.5px; color: #000; line-height: 1; }
+  .header-icons { display: flex; gap: 10px; align-items: center; }
+  .header-icon-btn { width: 40px; height: 40px; background: #fff; border-radius: 50%; display: flex; align-items: center; justify-content: center; border: none; cursor: pointer; box-shadow: 0 1px 4px rgba(0,0,0,0.1); }
+
+  /* Segment */
+  .segment { display: flex; background: #e0e0e6; border-radius: 30px; padding: 3px; margin: 0 0 16px; }
+  .seg-btn { flex: 1; padding: 8px 0; text-align: center; font-size: 15px; font-weight: 500; border-radius: 28px; border: none; background: transparent; cursor: pointer; color: #555; transition: all 0.2s; font-family: inherit; }
+  .seg-btn.active { background: #fff; color: #000; font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }
+  .mobile-segment { margin: 0 20px 16px; }
+
+  /* Banner */
+  .banner { background: linear-gradient(135deg, #28a55a 0%, #47c96a 55%, #8ddc6a 100%); border-radius: 18px; padding: 18px 20px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; margin-bottom: 20px; }
+  .banner-text p { font-size: 19px; font-weight: 800; color: #fff; line-height: 1.3; }
+  .social-stack { display: flex; align-items: center; position: relative; width: 88px; height: 52px; flex-shrink: 0; }
+  .si { position: absolute; width: 40px; height: 40px; border-radius: 10px; display: flex; align-items: center; justify-content: center; border: 2.5px solid #fff; }
+  .si svg { width: 22px; height: 22px; }
+  .si-ig { background: linear-gradient(135deg, #f09433, #e6683c, #dc2743, #cc2366, #bc1888); left: 0; top: 0; }
+  .si-tt { background: #000; left: 22px; top: -6px; }
+  .si-fb { background: #1877F2; left: 42px; top: 10px; }
+
+  /* Recipe grid */
+  .recipe-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .recipe-card { background: #fff; border-radius: 16px; overflow: hidden; cursor: pointer; transition: transform 0.15s, box-shadow 0.15s; }
+  .recipe-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.1); }
+  .recipe-card:active { transform: scale(0.97); }
+  .card-img-wrap { position: relative; aspect-ratio: 1/1; overflow: hidden; background: #ddd; }
+  .card-img-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .play-overlay { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .play-btn { width: 34px; height: 34px; background: rgba(255,255,255,0.88); border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+  .card-body { padding: 10px 10px 12px; }
+  .card-title { font-size: 13px; font-weight: 600; color: #111; line-height: 1.35; margin-bottom: 8px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .card-meta { display: flex; justify-content: space-between; align-items: center; }
+  .card-time { display: flex; align-items: center; gap: 5px; font-size: 12px; color: #555; }
+  .clock-icon { width: 16px; height: 16px; background: #ffa500; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+  .more-btn { background: none; border: none; cursor: pointer; color: #aaa; font-size: 17px; letter-spacing: 1px; line-height: 1; padding: 0 2px; }
+
+  /* Video card */
+  .video-card { background: #fff; border-radius: 18px; padding: 20px; margin-bottom: 20px; }
+  .video-card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+  .video-card-header h3 { font-size: 16px; font-weight: 600; color: #000; }
+  .video-card-header button { background: none; border: none; cursor: pointer; color: #aaa; font-size: 22px; line-height: 1; }
+  .video-input { width: 100%; padding: 10px 14px; border: 1px solid #ddd; border-radius: 12px; font-size: 14px; font-family: inherit; outline: none; color: #111; }
+  .video-input:focus { border-color: #2a9d5c; }
+  .video-label { font-size: 12px; color: #888; margin-bottom: 6px; display: block; font-weight: 500; }
+  .btn-green { width: 100%; background: #2a9d5c; color: #fff; border: none; border-radius: 12px; padding: 12px; font-size: 15px; font-weight: 600; font-family: inherit; cursor: pointer; margin-top: 12px; }
+  .btn-green:disabled { background: #aaa; cursor: not-allowed; }
+
+  /* Ideas */
+  .section-card { background: #fff; border-radius: 18px; padding: 18px; margin-bottom: 16px; }
+  .section-title { font-size: 17px; font-weight: 700; color: #000; margin-bottom: 14px; }
+  .ingredient-row { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px; border-radius: 12px; cursor: pointer; margin-bottom: 8px; border: 2px solid transparent; }
+  .ingredient-row.on { background: #edfaf3; border-color: #2a9d5c; }
+  .ingredient-row.off { background: #f5f5f7; border-color: #e5e5ea; }
+  .ing-name { font-size: 14px; font-weight: 600; color: #111; }
+  .ing-price { font-size: 12px; color: #888; margin-top: 2px; }
+  .check { color: #2a9d5c; font-weight: 700; font-size: 16px; }
+  .btn-outline-green { width: 100%; padding: 11px; border: 1.5px solid #2a9d5c; border-radius: 12px; background: none; color: #2a9d5c; font-size: 14px; font-weight: 600; font-family: inherit; cursor: pointer; margin-top: 4px; }
+  .input-sm { width: 100%; padding: 10px 12px; border: 1px solid #ddd; border-radius: 10px; font-size: 14px; font-family: inherit; outline: none; }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .add-ing-form { margin-top: 16px; border-top: 1px solid #f0f0f0; padding-top: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .btn-generate { width: 100%; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #fff; border: none; border-radius: 14px; padding: 15px; font-size: 16px; font-weight: 700; font-family: inherit; cursor: pointer; margin-top: 4px; }
+  .btn-generate:disabled { background: #aaa; cursor: not-allowed; }
+  .suggested-card { background: #fff; border-radius: 16px; overflow: hidden; margin-bottom: 12px; cursor: pointer; transition: box-shadow 0.15s; }
+  .suggested-card:hover { box-shadow: 0 6px 20px rgba(0,0,0,0.09); }
+  .suggested-card img { width: 100%; height: 150px; object-fit: cover; display: block; }
+  .suggested-body { padding: 12px 14px; }
+  .suggested-title { font-size: 14px; font-weight: 700; color: #111; margin-bottom: 6px; }
+  .suggested-meta { display: flex; justify-content: space-between; font-size: 13px; color: #666; }
+  .suggested-cost { font-weight: 600; color: #2a9d5c; }
+  .placeholder-card { background: #fff; border-radius: 18px; padding: 64px 24px; text-align: center; }
+  .placeholder-card svg { color: #ccc; width: 48px; height: 48px; margin: 0 auto 12px; display: block; }
+  .placeholder-card p { color: #aaa; font-size: 15px; margin-top: 8px; }
+
+  /* Bottom nav */
+  .bottom-nav { position: fixed; bottom: 0; left: 0; right: 0; background: rgba(249,249,249,0.95); backdrop-filter: blur(12px); border-top: 0.5px solid #e0e0e0; padding: 8px 0 24px; display: flex; justify-content: space-around; align-items: center; z-index: 50; }
+  .nav-item { display: flex; flex-direction: column; align-items: center; gap: 3px; background: none; border: none; cursor: pointer; min-width: 60px; }
+  .nav-icon-wrap { width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 14px; }
+  .nav-item.active .nav-icon-wrap { background: #e8e8ed; }
+  .nav-item svg { width: 24px; height: 24px; color: #888; }
+  .nav-item.active svg { color: #111; }
+  .nav-label { font-size: 10px; font-weight: 500; color: #888; }
+  .nav-item.active .nav-label { color: #111; font-weight: 600; }
+  .nav-add { width: 52px; height: 52px; background: linear-gradient(145deg, #ff8c00, #ff5e00); border-radius: 50%; display: flex; align-items: center; justify-content: center; border: none; cursor: pointer; box-shadow: 0 4px 14px rgba(255,100,0,0.4); }
+
+  /* Modal */
+  .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 200; display: flex; align-items: flex-end; justify-content: center; }
+  .modal-sheet { width: 100%; background: #fff; border-radius: 24px 24px 0 0; padding: 24px 20px 40px; max-height: 90vh; overflow-y: auto; }
+  .modal-close { float: right; background: none; border: none; cursor: pointer; color: #aaa; font-size: 24px; line-height: 1; }
+  .modal-img { width: 100%; height: 220px; object-fit: cover; border-radius: 16px; margin-bottom: 16px; display: block; clear: both; }
+  .modal-title { font-size: 22px; font-weight: 700; color: #111; margin-bottom: 6px; }
+  .modal-meta { display: flex; gap: 16px; font-size: 14px; color: #666; margin-bottom: 20px; }
+  .modal-cost { font-weight: 700; color: #2a9d5c; }
+  .modal-section-title { font-size: 16px; font-weight: 700; color: #111; margin-bottom: 10px; }
+  .modal-ing-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; color: #444; border-bottom: 0.5px solid #f0f0f0; }
+  .modal-ing-price { color: #2a9d5c; font-weight: 600; }
+  .btn-save { width: 100%; background: #2a9d5c; color: #fff; border: none; border-radius: 14px; padding: 15px; font-size: 16px; font-weight: 700; font-family: inherit; cursor: pointer; margin-top: 20px; }
+
+  /* Notifications + status */
+  .notif-container { position: fixed; top: 16px; right: 16px; width: 300px; z-index: 300; pointer-events: none; display: flex; flex-direction: column; gap: 8px; }
+  .notif { padding: 12px 16px; border-radius: 12px; font-size: 13px; font-weight: 600; color: #fff; pointer-events: auto; animation: fade-in 0.25s ease; }
+  .notif.success { background: #2a9d5c; }
+  .notif.error { background: #e53e3e; }
+  .notif.info { background: #3b82f6; }
+  .status-bar { padding: 10px 14px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 12px; font-size: 13px; color: #1d4ed8; font-weight: 500; margin-bottom: 16px; }
+
+  @keyframes fade-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* Responsive */
+  @media (min-width: 768px) {
+    body { background: #f0f0f5; }
+    .sidebar { display: flex; }
+    .topbar { display: flex; }
+    .desktop-content { display: block; }
+    .mobile-header { display: none; }
+    .mobile-content { display: none !important; }
+    .bottom-nav { display: none; }
+    .modal-overlay { align-items: center; }
+    .modal-sheet { width: 540px; border-radius: 24px; max-height: 85vh; }
+    .recipe-grid { grid-template-columns: repeat(3, 1fr); }
+  }
+  @media (min-width: 1100px) { .recipe-grid { grid-template-columns: repeat(4, 1fr); } }
+</style>
+</head>
+<body>
+
+<!-- NOTIFICATIONS -->
+<div class="notif-container" id="notifContainer"></div>
+
+<div class="shell">
+
+  <!-- SIDEBAR (desktop) -->
+  <aside class="sidebar">
+    <div class="sidebar-logo">
+      <div class="sidebar-logo-dot"></div>
+      RecipeBox
+    </div>
+    <nav class="sidebar-nav" id="sidebarNav"></nav>
+    <button class="sidebar-add" onclick="openSaveRecipe()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      Save a Recipe
+    </button>
+  </aside>
+
+  <!-- MAIN -->
+  <div class="main">
+
+    <!-- DESKTOP TOPBAR -->
+    <div class="topbar">
+      <h1 class="topbar-title" id="topbarTitle">Home</h1>
+      <div class="topbar-right">
+        <div class="topbar-segment" id="topbarSegment" style="display:none">
+          <button class="topbar-seg-btn active" onclick="setFilter('all',this)">All Recipes</button>
+          <button class="topbar-seg-btn" onclick="setFilter('cookbooks',this)">Cookbooks</button>
+        </div>
+        <button class="header-icon-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="17" height="17"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+        </button>
+        <button class="header-icon-btn">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="17" height="17"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <!-- DESKTOP CONTENT -->
+    <div class="desktop-content" id="desktopContent"></div>
+
+    <!-- MOBILE HEADER -->
+    <div class="mobile-header">
+      <div class="mobile-header-row">
+        <h1 class="mobile-title" id="mobileTitle">Home</h1>
+        <div class="header-icons">
+          <button class="header-icon-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="17" height="17"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </button>
+          <button class="header-icon-btn">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="17" height="17"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+        </div>
+      </div>
+      <div class="segment mobile-segment" id="mobileSegment" style="display:none">
+        <button class="seg-btn active" onclick="setFilter('all',this)">All Recipes</button>
+        <button class="seg-btn" onclick="setFilter('cookbooks',this)">Cookbooks</button>
+      </div>
+    </div>
+
+    <!-- MOBILE CONTENT -->
+    <div class="mobile-content" id="mobileContent" style="padding:0 16px 100px"></div>
+
+  </div><!-- end .main -->
+</div><!-- end .shell -->
+
+<!-- MODAL -->
+<div class="modal-overlay" id="modal" style="display:none" onclick="closeModal(event)">
+  <div class="modal-sheet" onclick="event.stopPropagation()">
+    <button class="modal-close" onclick="closeModal()">✕</button>
+    <img id="modalImg" src="" alt="" class="modal-img">
+    <div class="modal-title" id="modalTitle"></div>
+    <div class="modal-meta" id="modalMeta"></div>
+    <div id="modalIngredients"></div>
+    <button class="btn-save" onclick="closeModal()">Save Recipe</button>
+  </div>
+</div>
+
+<!-- BOTTOM NAV (mobile) -->
+<div class="bottom-nav" id="bottomNav"></div>
+
+<script>
+const API_URL = 'https://food-tracker-36no.onrender.com';
+
+// ── STATE ──
+let activeTab = 'home';
+let recipes = [
+  { id: 1, title: 'Buffalo Chicken Crispy Tacos', time: 30, image: 'https://images.unsplash.com/photo-1565299585323-38d6b0865b47?w=400&h=300&fit=crop', cost: 8.50 },
+  { id: 2, title: 'High Protein Crispy Chicken Mac n Cheese', time: 30, image: 'https://images.unsplash.com/photo-1621996346565-e3dbc646d9a9?w=400&h=300&fit=crop', cost: 12.00 },
+];
+let ingredients = [
+  { id: 1, name: 'Flour', pricePerUnit: 15, unitQuantity: 25, unit: 'kg' },
+  { id: 2, name: 'Chicken Breast', pricePerUnit: 12, unitQuantity: 1, unit: 'kg' },
+  { id: 3, name: 'Eggs', pricePerUnit: 3, unitQuantity: 12, unit: 'pieces' },
+];
+let availableIngredients = ['Chicken Breast', 'Eggs'];
+let suggestedRecipes = [];
+let showVideoInput = false;
+let showIngredientForm = false;
+let loading = false;
+let statusMsg = '';
+
+const tabTitles = { home: 'Home', ideas: 'Ideas', planner: 'Planner', groceries: 'Groceries' };
+
+const NAV = [
+  { key: 'home', label: 'Home', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="20" height="20"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>` },
+  { key: 'ideas', label: 'Ideas', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" width="20" height="20"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>` },
+  { key: 'planner', label: 'Planner', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" width="20" height="20"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/><line x1="9" y1="15" x2="13" y2="15"/></svg>` },
+  { key: 'groceries', label: 'Groceries', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" width="20" height="20"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>` },
+];
+
+// ── NOTIFICATIONS ──
+function notify(msg, type = 'info') {
+  const c = document.getElementById('notifContainer');
+  const n = document.createElement('div');
+  n.className = `notif ${type}`;
+  n.textContent = msg;
+  c.appendChild(n);
+  setTimeout(() => n.remove(), 3000);
+}
+
+// ── RENDER ──
+function render() {
+  const title = tabTitles[activeTab];
+  document.getElementById('topbarTitle').textContent = title;
+  document.getElementById('mobileTitle').textContent = title;
+
+  const seg = document.getElementById('topbarSegment');
+  const mobSeg = document.getElementById('mobileSegment');
+  seg.style.display = activeTab === 'home' ? 'flex' : 'none';
+  mobSeg.style.display = activeTab === 'home' ? 'flex' : 'none';
+
+  const html = buildContent();
+  document.getElementById('desktopContent').innerHTML = html;
+  document.getElementById('mobileContent').innerHTML = html;
+
+  buildSidebar();
+  buildBottomNav();
+  attachEvents();
+}
+
+function buildContent() {
+  const statusHtml = statusMsg ? `<div class="status-bar">${statusMsg}</div>` : '';
+  if (activeTab === 'home') return statusHtml + buildBannerOrForm() + buildRecipeGrid();
+  if (activeTab === 'ideas') return statusHtml + buildIdeas();
+  if (activeTab === 'planner') return `<div class="placeholder-card"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/></svg><p>Meal planner coming soon</p></div>`;
+  if (activeTab === 'groceries') return `<div class="placeholder-card"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/></svg><p>Shopping list coming soon</p></div>`;
+  return '';
+}
+
+function buildBannerOrForm() {
+  if (!showVideoInput) {
+    return `
+      <div class="banner" onclick="openSaveRecipe()">
+        <div class="banner-text"><p>Found a Recipe?<br>Save It Here →</p></div>
+        <div class="social-stack">
+          <div class="si si-ig"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><rect x="2" y="2" width="20" height="20" rx="5"/><circle cx="12" cy="12" r="5"/><circle cx="17.5" cy="6.5" r="1.2" fill="#fff" stroke="none"/></svg></div>
+          <div class="si si-tt"><svg viewBox="0 0 24 24" fill="#fff"><path d="M19.59 6.69a4.83 4.83 0 01-3.77-4.25V2h-3.45v13.67a2.89 2.89 0 01-2.88 2.5 2.89 2.89 0 01-2.89-2.89 2.89 2.89 0 012.89-2.89c.28 0 .54.04.79.1V9.01a6.34 6.34 0 106.33 6.34V8.69a8.18 8.18 0 004.78 1.52V6.75a4.85 4.85 0 01-1-.06z"/></svg></div>
+          <div class="si si-fb"><svg viewBox="0 0 24 24" fill="#fff"><path d="M18 2h-3a5 5 0 00-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 011-1h3z"/></svg></div>
+        </div>
+      </div>`;
+  }
+  return `
+    <div class="video-card">
+      <div class="video-card-header">
+        <h3>Add from Video / Link</h3>
+        <button onclick="closeSaveRecipe()">✕</button>
+      </div>
+      <span class="video-label">Instagram / TikTok / YouTube Link</span>
+      <input class="video-input" id="videoInput" type="text" placeholder="https://..." value="">
+      <button class="btn-green" id="analyzeBtn" onclick="handleVideoInput()" ${loading ? 'disabled' : ''}>
+        ${loading ? 'Analyzing...' : 'Analyze Video'}
+      </button>
+    </div>`;
+}
+
+function buildRecipeGrid() {
+  if (!recipes.length) return '<p style="color:#aaa;text-align:center;padding:32px">No recipes yet. Save one!</p>';
+  return `<div class="recipe-grid">
+    ${recipes.map((r, i) => `
+      <div class="recipe-card" onclick="openModal(${i})">
+        <div class="card-img-wrap">
+          <img src="${r.image}" alt="${r.title}" loading="lazy">
+          <div class="play-overlay"><div class="play-btn"><svg viewBox="0 0 24 24" fill="#333" width="13" height="13"><polygon points="5,3 19,12 5,21"/></svg></div></div>
+        </div>
+        <div class="card-body">
+          <div class="card-title">${r.title}</div>
+          <div class="card-meta">
+            <div class="card-time">
+              <div class="clock-icon"><svg viewBox="0 0 12 12" fill="none"><circle cx="6" cy="6" r="5" stroke="#fff" stroke-width="1.3"/><path d="M6 3v3l2 1" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/></svg></div>
+              ${r.time || r.cookTime || '?'} min
+            </div>
+            <button class="more-btn" onclick="event.stopPropagation()">···</button>
+          </div>
+        </div>
+      </div>`).join('')}
+  </div>`;
+}
+
+function buildIdeas() {
+  const ingRows = ingredients.map(ing => {
+    const on = availableIngredients.includes(ing.name);
+    const ppu = (ing.pricePerUnit / ing.unitQuantity).toFixed(2);
+    return `<div class="ingredient-row ${on ? 'on' : 'off'}" onclick="toggleIngredient('${ing.name}')">
+      <div><div class="ing-name">${ing.name}</div><div class="ing-price">€${ppu}/${ing.unit}</div></div>
+      ${on ? '<span class="check">✓</span>' : ''}
+    </div>`;
+  }).join('');
+
+  const addForm = showIngredientForm ? `
+    <div class="add-ing-form">
+      <input class="input-sm" id="ingName" placeholder="Ingredient name">
+      <div class="grid-2">
+        <input class="input-sm" id="ingPrice" type="number" placeholder="Price (€)">
+        <input class="input-sm" id="ingQty" type="number" placeholder="Quantity">
+      </div>
+      <select class="input-sm" id="ingUnit">
+        <option value="kg">kg</option><option value="g">g</option>
+        <option value="l">liters</option><option value="ml">ml</option><option value="pieces">pieces</option>
+      </select>
+      <button class="btn-green" onclick="handleAddIngredient()">Add</button>
+    </div>` : '';
+
+  const suggested = suggestedRecipes.length ? `
+    <div style="margin-top:20px">
+      <div class="section-title" style="margin-bottom:12px">Suggested Recipes</div>
+      ${suggestedRecipes.map((r, i) => `
+        <div class="suggested-card" onclick="openSuggestedModal(${i})">
+          <img src="${r.image}" alt="${r.title}" loading="lazy">
+          <div class="suggested-body">
+            <div class="suggested-title">${r.title}</div>
+            <div class="suggested-meta"><span>⏱ ${r.cookTime} min</span><span class="suggested-cost">€${r.cost}</span></div>
+          </div>
+        </div>`).join('')}
+    </div>` : '';
+
+  return `
+    <div class="section-card">
+      <div class="section-title">Your Ingredients</div>
+      ${ingRows}
+      <button class="btn-outline-green" onclick="toggleIngForm()">+ Add Ingredient</button>
+      ${addForm}
+    </div>
+    <button class="btn-generate" onclick="generateRecipeIdeas()" ${loading ? 'disabled' : ''}>
+      ${loading ? 'Finding recipes...' : '✨ Generate Recipe Ideas'}
+    </button>
+    ${suggested}`;
+}
+
+function buildSidebar() {
+  document.getElementById('sidebarNav').innerHTML = NAV.map(item => `
+    <button class="sidebar-item ${activeTab === item.key ? 'active' : ''}" onclick="setTab('${item.key}')">
+      ${item.icon} ${item.label}
+    </button>`).join('');
+}
+
+function buildBottomNav() {
+  document.getElementById('bottomNav').innerHTML = NAV.map((item, idx) => `
+    <button class="nav-item ${activeTab === item.key ? 'active' : ''}" onclick="setTab('${item.key}')">
+      <div class="nav-icon-wrap">${item.icon}</div>
+      <span class="nav-label">${item.label}</span>
+    </button>
+    ${idx === 1 ? `<button class="nav-add" onclick="openSaveRecipe()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" width="26" height="26"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+    </button>` : ''}
+  `).join('');
+}
+
+function attachEvents() {
+  // focus video input if shown
+  if (showVideoInput) {
+    const inp = document.getElementById('videoInput');
+    if (inp) inp.focus();
+  }
+}
+
+// ── ACTIONS ──
+function setTab(tab) {
+  activeTab = tab;
+  if (tab !== 'home') showVideoInput = false;
+  render();
+}
+
+function setFilter(f, btn) {
+  document.querySelectorAll('.topbar-seg-btn, .seg-btn').forEach(b => b.classList.remove('active'));
+  document.querySelectorAll(`.topbar-seg-btn, .seg-btn`).forEach(b => { if (b.textContent.toLowerCase().includes(f === 'all' ? 'all' : 'cook')) b.classList.add('active'); });
+}
+
+function openSaveRecipe() {
+  activeTab = 'home';
+  showVideoInput = true;
+  render();
+}
+
+function closeSaveRecipe() {
+  showVideoInput = false;
+  render();
+}
+
+function toggleIngForm() {
+  showIngredientForm = !showIngredientForm;
+  render();
+}
+
+function toggleIngredient(name) {
+  if (availableIngredients.includes(name)) {
+    availableIngredients = availableIngredients.filter(i => i !== name);
+  } else {
+    availableIngredients.push(name);
+  }
+  render();
+}
+
+function handleAddIngredient() {
+  const name = document.getElementById('ingName').value.trim();
+  const price = parseFloat(document.getElementById('ingPrice').value);
+  const qty = parseFloat(document.getElementById('ingQty').value);
+  const unit = document.getElementById('ingUnit').value;
+  if (!name || !price || !qty) { notify('Please fill in all fields', 'error'); return; }
+  ingredients.push({ id: ingredients.length + 1, name, pricePerUnit: price, unitQuantity: qty, unit });
+  showIngredientForm = false;
+  notify('Ingredient added!', 'success');
+  render();
+}
+
+async function handleVideoInput() {
+  const url = document.getElementById('videoInput').value.trim();
+  if (!url) { notify('Please enter a video URL', 'error'); return; }
+  loading = true;
+  statusMsg = '📹 Analyzing video with AI...';
+  render();
+  try {
+    const res = await fetch(`${API_URL}/api/analyze-video`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url })
+    });
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    if (data.recipe) {
+      recipes.push({ ...data.recipe, id: recipes.length + 1 });
+      showVideoInput = false;
+      statusMsg = '✓ Recipe added!';
+      notify('Recipe added!', 'success');
+      setTimeout(() => { statusMsg = ''; render(); }, 3000);
+    }
+  } catch (e) {
+    statusMsg = '';
+    notify('Error connecting to server', 'error');
+  }
+  loading = false;
+  render();
+}
+
+async function generateRecipeIdeas() {
+  if (!availableIngredients.length) { notify('Select some ingredients first!', 'error'); return; }
+  loading = true;
+  statusMsg = '🍳 Generating recipe ideas...';
+  render();
+  try {
+    const res = await fetch(`${API_URL}/api/generate-recipes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ingredients: availableIngredients })
+    });
+    const data = await res.json();
+    if (data.recipes) {
+      suggestedRecipes = data.recipes;
+      statusMsg = '✓ Recipes ready!';
+      notify('Recipes generated!', 'success');
+      setTimeout(() => { statusMsg = ''; render(); }, 3000);
+    }
+  } catch (e) {
+    statusMsg = '';
+    notify('Error connecting to server', 'error');
+  }
+  loading = false;
+  render();
+}
+
+// ── MODAL ──
+function openModal(idx) {
+  const r = recipes[idx];
+  showRecipeModal(r);
+}
+
+function openSuggestedModal(idx) {
+  const r = suggestedRecipes[idx];
+  showRecipeModal(r);
+}
+
+function showRecipeModal(r) {
+  document.getElementById('modalImg').src = r.image || '';
+  document.getElementById('modalImg').alt = r.title || '';
+  document.getElementById('modalTitle').textContent = r.title || '';
+  document.getElementById('modalMeta').innerHTML = `
+    <span>⏱ ${r.time || r.cookTime || '?'} min</span>
+    ${r.cost ? `<span class="modal-cost">€${r.cost}</span>` : ''}`;
+  const ings = r.ingredients?.length
+    ? `<div class="modal-section-title">Ingredients</div>` +
+      r.ingredients.map(ing => `<div class="modal-ing-row"><span>${ing}</span></div>`).join('')
+    : '';
+  document.getElementById('modalIngredients').innerHTML = ings;
+  document.getElementById('modal').style.display = 'flex';
+}
+
+function closeModal(e) {
+  if (!e || e.target === document.getElementById('modal')) {
+    document.getElementById('modal').style.display = 'none';
+  }
+}
+
+// ── INIT ──
+render();
+</script>
+</body>
+</html>
