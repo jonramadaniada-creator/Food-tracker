@@ -220,7 +220,6 @@ Return ONLY valid JSON (no extra text, no markdown):
   try { recipe = JSON.parse(finalText.match(/\{[\s\S]*\}/)?.[0]); } catch {}
   return recipe;
 }
-}
 
 // ── Upload + analyze ──
 app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
