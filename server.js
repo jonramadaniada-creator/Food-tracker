@@ -41,7 +41,7 @@ async function extractFrames(videoPath) {
       if (err) { reject(new Error('Failed to extract frames')); return; }
       const frames = fs.readdirSync(frameDir)
         .filter(f => f.endsWith('.jpg'))
-        .slice(0, 10) // Groq has lower token limits so use 10 frames
+        .slice(0, 5) // Groq vision supports max 5 images
         .map(f => path.join(frameDir, f));
       resolve(frames);
     });
