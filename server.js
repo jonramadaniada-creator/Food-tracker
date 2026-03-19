@@ -41,9 +41,11 @@ function isYouTube(url) {
 async function downloadVideo(url) {
   const videoPath = path.join('/tmp', `video_${Date.now()}.mp4`);
   const yt = await getYtDlp();
+  // Use a permissive format: prefer mp4, fall back to anything available
   await yt.execPromise([
     url,
-    '-f', 'best[ext=mp4][height<=480]',
+    '-f', 'mp4/best',
+    '--merge-output-format', 'mp4',
     '-o', videoPath
   ]);
   return videoPath;
@@ -90,6 +92,11 @@ const RECIPE_PROMPT = `Analyze this cooking video and extract the recipe. Return
 app.post('/api/analyze-video', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
+
+  // Basic URL validation
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    return res.status(400).json({ error: 'Invalid URL. Please paste a valid Instagram, TikTok, or YouTube link.' });
+  }
 
   let videoPath, frames = [];
   try {
