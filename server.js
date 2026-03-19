@@ -1,12 +1,12 @@
 const express = require('express');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const axios = require('axios');
 const { exec } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const ffmpegPath = require('ffmpeg-static');
 const YTDlpWrap = require('yt-dlp-wrap').default;
+const { GoogleGenerativeAI } = require('@google/generative-ai');
 
 dotenv.config();
 
@@ -15,7 +15,8 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3001;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 
 // ── Serve frontend ──
 app.use(express.static(path.join(__dirname, 'public')));
@@ -41,7 +42,6 @@ function isYouTube(url) {
 async function downloadVideo(url) {
   const videoPath = path.join('/tmp', `video_${Date.now()}.mp4`);
   const yt = await getYtDlp();
-  // Use a permissive format: prefer mp4, fall back to anything available
   await yt.execPromise([
     url,
     '-f', 'mp4/best',
@@ -71,11 +71,10 @@ function cleanup(...paths) {
 }
 
 async function callGemini(parts) {
-  const res = await axios.post(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_API_KEY}`,
-    { contents: [{ parts }] }
-  );
-  return res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+  const result = await model.generateContent({
+    contents: [{ role: 'user', parts }]
+  });
+  return result.response.text();
 }
 
 const RECIPE_PROMPT = `Analyze this cooking video and extract the recipe. Return ONLY valid JSON:
@@ -93,7 +92,6 @@ app.post('/api/analyze-video', async (req, res) => {
   const { url } = req.body;
   if (!url) return res.status(400).json({ error: 'URL required' });
 
-  // Basic URL validation
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     return res.status(400).json({ error: 'Invalid URL. Please paste a valid Instagram, TikTok, or YouTube link.' });
   }
@@ -103,19 +101,17 @@ app.post('/api/analyze-video', async (req, res) => {
     let text;
 
     if (isYouTube(url)) {
-      // YouTube: pass URL directly to Gemini, no download needed
       text = await callGemini([
-        { file_data: { mime_type: 'video/mp4', file_uri: url } },
+        { fileData: { mimeType: 'video/mp4', fileUri: url } },
         { text: RECIPE_PROMPT }
       ]);
     } else {
-      // Instagram / TikTok / other: download and extract frames
       videoPath = await downloadVideo(url);
       frames = await extractFrames(videoPath);
       if (!frames.length) throw new Error('No frames extracted');
 
       const imageParts = frames.map(f => ({
-        inline_data: { mime_type: 'image/jpeg', data: fs.readFileSync(f).toString('base64') }
+        inlineData: { mimeType: 'image/jpeg', data: fs.readFileSync(f).toString('base64') }
       }));
       text = await callGemini([...imageParts, { text: RECIPE_PROMPT }]);
       cleanup(videoPath, frames);
@@ -166,6 +162,6 @@ Generate 2 recipe ideas. Return ONLY a valid JSON array:
   }
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', gemini: !!GEMINI_API_KEY }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', gemini: !!process.env.GEMINI_API_KEY }));
 
 app.listen(PORT, '0.0.0.0', () => console.log(`✅ RecipeBox running on port ${PORT}`));
