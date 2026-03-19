@@ -34,6 +34,10 @@ async function getYtDlp() {
 }
 
 // ── Helpers ──
+function isYouTube(url) {
+  return /youtube\.com|youtu\.be/.test(url);
+}
+
 async function downloadVideo(url) {
   const videoPath = path.join('/tmp', `video_${Date.now()}.mp4`);
   const yt = await getYtDlp();
@@ -72,24 +76,7 @@ async function callGemini(parts) {
   return res.data.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
-// ── API Routes ──
-app.post('/api/analyze-video', async (req, res) => {
-  const { url } = req.body;
-  if (!url) return res.status(400).json({ error: 'URL required' });
-
-  let videoPath, frames = [];
-  try {
-    videoPath = await downloadVideo(url);
-    frames = await extractFrames(videoPath);
-    if (!frames.length) throw new Error('No frames extracted');
-
-    const imageParts = frames.map(f => ({
-      inline_data: { mime_type: 'image/jpeg', data: fs.readFileSync(f).toString('base64') }
-    }));
-
-    const text = await callGemini([
-      ...imageParts,
-      { text: `Analyze these cooking video frames and extract the recipe. Return ONLY valid JSON:
+const RECIPE_PROMPT = `Analyze this cooking video and extract the recipe. Return ONLY valid JSON:
 {
   "title": "Recipe Name",
   "ingredients": ["ingredient 1", "ingredient 2"],
@@ -97,14 +84,40 @@ app.post('/api/analyze-video', async (req, res) => {
   "servings": 4,
   "difficulty": "easy",
   "cost": 8.50
-}` }
-    ]);
+}`;
+
+// ── API Routes ──
+app.post('/api/analyze-video', async (req, res) => {
+  const { url } = req.body;
+  if (!url) return res.status(400).json({ error: 'URL required' });
+
+  let videoPath, frames = [];
+  try {
+    let text;
+
+    if (isYouTube(url)) {
+      // YouTube: pass URL directly to Gemini, no download needed
+      text = await callGemini([
+        { file_data: { mime_type: 'video/mp4', file_uri: url } },
+        { text: RECIPE_PROMPT }
+      ]);
+    } else {
+      // Instagram / TikTok / other: download and extract frames
+      videoPath = await downloadVideo(url);
+      frames = await extractFrames(videoPath);
+      if (!frames.length) throw new Error('No frames extracted');
+
+      const imageParts = frames.map(f => ({
+        inline_data: { mime_type: 'image/jpeg', data: fs.readFileSync(f).toString('base64') }
+      }));
+      text = await callGemini([...imageParts, { text: RECIPE_PROMPT }]);
+      cleanup(videoPath, frames);
+    }
 
     let recipe = {};
     try { recipe = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]); } catch {}
     recipe.image = 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
 
-    cleanup(videoPath, frames);
     res.json({ recipe });
   } catch (err) {
     cleanup(videoPath, frames);
