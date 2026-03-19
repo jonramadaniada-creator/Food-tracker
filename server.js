@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const ffmpegPath = require('ffmpeg-static');
-const { GoogleGenAI, Modality } = require('@google/genai');
+const Groq = require('groq-sdk');
 
 dotenv.config();
 
@@ -15,7 +15,7 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3001;
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const upload = multer({ dest: '/tmp/uploads/' });
 
@@ -29,14 +29,8 @@ async function extractFrames(videoPath) {
 
   const duration = await new Promise((resolve) => {
     exec(`"${ffmpegPath}" -i "${videoPath}" 2>&1`, (err, stdout, stderr) => {
-      const out = stdout + stderr;
-      const match = out.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
-      if (match) {
-        const secs = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseFloat(match[3]);
-        resolve(secs);
-      } else {
-        resolve(30);
-      }
+      const match = (stdout + stderr).match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+      resolve(match ? parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseFloat(match[3]) : 30);
     });
   });
 
@@ -47,7 +41,7 @@ async function extractFrames(videoPath) {
       if (err) { reject(new Error('Failed to extract frames')); return; }
       const frames = fs.readdirSync(frameDir)
         .filter(f => f.endsWith('.jpg'))
-        .slice(0, 20)
+        .slice(0, 10) // Groq has lower token limits so use 10 frames
         .map(f => path.join(frameDir, f));
       resolve(frames);
     });
@@ -58,26 +52,23 @@ function cleanup(...paths) {
   paths.flat().forEach(p => { try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch {} });
 }
 
-// ── Build personalized RDI prompt based on user profile ──
 function buildRecipePrompt(profile) {
   const profileInfo = profile
-    ? `User profile: Age ${profile.age}, ${profile.sex}, ${profile.height}cm, ${profile.weight}kg, activity level: ${profile.activity}.
-Use this to calculate personalized daily RDI percentages for each nutrient.`
+    ? `User profile: Age ${profile.age}, ${profile.sex}, ${profile.height}cm, ${profile.weight}kg, activity: ${profile.activity}, training: ${profile.training}. Use this to calculate personalized daily RDI percentages.`
     : `Use standard adult RDI values (2000 kcal reference diet).`;
 
-  return `You are a professional nutritionist and chef analyzing a cooking video.
-The frames are sampled throughout the full video — look for text overlays, ingredients shown briefly, cooking actions, and the final dish.
+  return `You are a professional nutritionist and chef analyzing frames from a fast-paced cooking video (Instagram Reel / TikTok).
+Frames are sampled throughout the full video — look for text overlays, ingredients shown briefly, cooking actions, and the final dish.
 
 ${profileInfo}
 
 Extract the complete recipe AND full nutritional breakdown per serving.
-
-Return ONLY valid JSON (no extra text):
+Return ONLY valid JSON (no extra text, no markdown):
 {
   "title": "Recipe Name",
-  "description": "One sentence description of the dish",
+  "description": "One sentence description",
   "ingredients": ["2 chicken breasts", "1 cup flour"],
-  "steps": ["Step 1 description", "Step 2 description"],
+  "steps": ["Step 1", "Step 2"],
   "cookTime": 25,
   "servings": 2,
   "difficulty": "easy",
@@ -129,29 +120,6 @@ Return ONLY valid JSON (no extra text):
 }`;
 }
 
-// ── Generate food image with Nano Banana (gemini-2.5-flash-image) ──
-async function generateFoodImage(recipeTitle, description) {
-  try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: `Generate a professional, appetizing food photography image of: ${recipeTitle}. ${description || ''}. 
-Style: overhead shot, natural lighting, on a clean wooden table, restaurant quality plating. 
-Make it look delicious and realistic.`,
-      config: { responseModalities: [Modality.IMAGE] }
-    });
-
-    for (const part of response.candidates[0].content.parts) {
-      if (part.inlineData) {
-        return `data:image/png;base64,${part.inlineData.data}`;
-      }
-    }
-  } catch (err) {
-    console.error('Image generation failed:', err.message);
-  }
-  // Fallback to unsplash if image gen fails
-  return 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
-}
-
 // ── Upload + analyze ──
 app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
@@ -165,22 +133,33 @@ app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
     frames = await extractFrames(videoPath);
     if (!frames.length) throw new Error('No frames extracted');
 
-    const imageParts = frames.map(f => ({
-      inlineData: { mimeType: 'image/jpeg', data: fs.readFileSync(f).toString('base64') }
+    // Build image content for Groq vision
+    const imageMessages = frames.map(f => ({
+      type: 'image_url',
+      image_url: {
+        url: `data:image/jpeg;base64,${fs.readFileSync(f).toString('base64')}`
+      }
     }));
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash-lite',
-      contents: [{ role: 'user', parts: [...imageParts, { text: buildRecipePrompt(profile) }] }]
+    const response = await groq.chat.completions.create({
+      model: 'meta-llama/llama-4-scout-17b-16e-instruct',
+      messages: [
+        {
+          role: 'user',
+          content: [
+            ...imageMessages,
+            { type: 'text', text: buildRecipePrompt(profile) }
+          ]
+        }
+      ],
+      max_tokens: 4000,
+      temperature: 0.3
     });
 
-    const text = response.candidates[0].content.parts[0].text;
+    const text = response.choices[0].message.content;
     let recipe = {};
     try { recipe = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]); } catch {}
-
-    // Generate food image in parallel
-    const imageUrl = await generateFoodImage(recipe.title, recipe.description);
-    recipe.image = imageUrl;
+    recipe.image = 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
 
     cleanup(videoPath, frames);
     res.json({ recipe });
@@ -197,16 +176,19 @@ app.post('/api/generate-recipes', async (req, res) => {
   if (!ingredients?.length) return res.status(400).json({ error: 'Ingredients required' });
 
   const profileInfo = profile
-    ? `User profile: Age ${profile.age}, ${profile.sex}, ${profile.height}cm, ${profile.weight}kg, activity: ${profile.activity}.`
+    ? `User profile: Age ${profile.age}, ${profile.sex}, ${profile.height}cm, ${profile.weight}kg, activity: ${profile.activity}, training: ${profile.training}.`
     : '';
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash-lite',
-      contents: `You are a creative chef. ${profileInfo}
+    const response = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [
+        {
+          role: 'user',
+          content: `You are a creative chef. ${profileInfo}
 Based on these available ingredients: ${ingredients.join(', ')}
 
-Generate 2 realistic recipe ideas. Return ONLY a valid JSON array:
+Generate 2 realistic recipe ideas. Return ONLY a valid JSON array (no markdown):
 [
   {
     "title": "Recipe Name",
@@ -217,9 +199,13 @@ Generate 2 realistic recipe ideas. Return ONLY a valid JSON array:
     "cost": 8.50
   }
 ]`
+        }
+      ],
+      max_tokens: 1000,
+      temperature: 0.7
     });
 
-    const text = response.candidates[0].content.parts[0].text;
+    const text = response.choices[0].message.content;
     let recipes = [];
     try { recipes = JSON.parse(text.match(/\[[\s\S]*\]/)?.[0]); } catch {}
 
@@ -234,6 +220,6 @@ Generate 2 realistic recipe ideas. Return ONLY a valid JSON array:
   }
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok', gemini: !!process.env.GEMINI_API_KEY }));
+app.get('/api/health', (req, res) => res.json({ status: 'ok', groq: !!process.env.GROQ_API_KEY }));
 
 app.listen(PORT, '0.0.0.0', () => console.log(`✅ RecipeBox running on port ${PORT}`));
