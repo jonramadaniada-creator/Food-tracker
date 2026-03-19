@@ -16,8 +16,7 @@ app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3001;
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-2.0-flash' });
-
+const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
 // ── File upload ──
 const upload = multer({ dest: '/tmp/uploads/' });
 
