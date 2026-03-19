@@ -293,6 +293,8 @@ let showVideoInput = false;
 let showIngredientForm = false;
 let loading = false;
 let statusMsg = '';
+let videoTab = 'upload';
+function setVideoTab(tab) { videoTab = tab; render(); }
 
 // Load profile from localStorage
 let userProfile = JSON.parse(localStorage.getItem('userProfile') || 'null');
@@ -364,11 +366,23 @@ function buildBannerOrForm() {
         <button onclick="closeSaveRecipe()">✕</button>
       </div>
       ${userProfile ? `<div class="profile-badge">👤 Using your profile for personalized nutrition & RDI</div>` : `<div class="profile-badge" style="background:#fff8e1;border-color:#ffd54f;color:#b8860b">⚠️ Set up your profile in Settings for personalized RDI</div>`}
-      <span class="video-label">Upload a cooking video from your device (Reel, TikTok, etc.)</span>
-      <input class="video-input" id="videoFileInput" type="file" accept="video/*" style="padding:8px;cursor:pointer">
-      <button class="btn-green" onclick="handleFileUpload()" ${loading ? 'disabled' : ''}>
-        ${loading ? '⏳ Analyzing...' : '🔍 Analyze Video'}
-      </button>
+      <div style="display:flex;background:#f2f2f7;border-radius:10px;padding:3px;margin-bottom:14px">
+        <button onclick="setVideoTab('upload')" style="flex:1;padding:8px;border:none;border-radius:8px;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;background:${videoTab==='upload'?'#fff':'transparent'};color:${videoTab==='upload'?'#111':'#888'};box-shadow:${videoTab==='upload'?'0 1px 3px rgba(0,0,0,0.1)':'none'}">📁 Upload File</button>
+        <button onclick="setVideoTab('link')" style="flex:1;padding:8px;border:none;border-radius:8px;font-family:inherit;font-size:14px;font-weight:600;cursor:pointer;background:${videoTab==='link'?'#fff':'transparent'};color:${videoTab==='link'?'#111':'#888'};box-shadow:${videoTab==='link'?'0 1px 3px rgba(0,0,0,0.1)':'none'}">🔗 Paste Link</button>
+      </div>
+      ${videoTab === 'upload' ? `
+        <span class="video-label">Upload a cooking video from your device</span>
+        <input class="video-input" id="videoFileInput" type="file" accept="video/*" style="padding:8px;cursor:pointer">
+        <button class="btn-green" onclick="handleFileUpload()" ${loading ? 'disabled' : ''}>
+          ${loading ? '⏳ Analyzing...' : '🔍 Analyze Video'}
+        </button>
+      ` : `
+        <span class="video-label">Instagram / TikTok Link</span>
+        <input class="video-input" id="videoUrlInput" type="text" placeholder="https://www.instagram.com/reel/...">
+        <button class="btn-green" onclick="handleUrlInput()" ${loading ? 'disabled' : ''}>
+          ${loading ? '⏳ Analyzing...' : '🔍 Analyze Video'}
+        </button>
+      `}
     </div>`;
 }
 
@@ -589,7 +603,7 @@ function saveProfile() {
   render();
 }
 
-function buildNutritionPanel(nutrition) {
+function buildNutritionPanel(nutrition, servingWeight) {
   if (!nutrition?.perServing) return '';
   const { macros, vitamins, minerals } = nutrition.perServing;
 
@@ -613,7 +627,7 @@ function buildNutritionPanel(nutrition) {
   const minNames = { calcium:'Calcium', iron:'Iron', magnesium:'Magnesium', phosphorus:'Phosphorus', potassium:'Potassium', zinc:'Zinc', copper:'Copper', manganese:'Manganese', selenium:'Selenium', iodine:'Iodine', chromium:'Chromium', molybdenum:'Molybdenum', fluoride:'Fluoride' };
 
   return `<div class="nutrition-panel">
-    <div class="nutrition-title">Nutrition per serving ${userProfile ? `<span style="font-size:11px;color:#2a9d5c;font-weight:500">(personalized for you)</span>` : ''}</div>
+    <div class="nutrition-title">Nutrition per serving ${servingWeight ? `<span style="font-size:12px;color:#888;font-weight:400">(~${servingWeight}g)</span>` : ''} ${userProfile ? `<span style="font-size:11px;color:#2a9d5c;font-weight:500">· personalized</span>` : ''}</div>
     <div class="nutrition-group">
       <div class="nutrition-group-label">Macronutrients</div>
       ${Object.entries(macroNames).map(([k,v]) => row(v, macros?.[k])).join('')}
@@ -627,6 +641,35 @@ function buildNutritionPanel(nutrition) {
       ${Object.entries(minNames).map(([k,v]) => row(v, minerals?.[k])).join('')}
     </div>
   </div>`;
+}
+
+async function handleUrlInput() {
+  const url = document.getElementById('videoUrlInput')?.value.trim();
+  if (!url) { notify('Please paste a link', 'error'); return; }
+  loading = true;
+  statusMsg = '📹 Downloading & analyzing video...';
+  render();
+  try {
+    const res = await fetch(`${API_URL}/api/analyze-video`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, profile: userProfile ? JSON.stringify(userProfile) : undefined })
+    });
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+    if (data.recipe) {
+      recipes.push({ ...data.recipe, id: recipes.length + 1 });
+      showVideoInput = false;
+      statusMsg = '✓ Recipe added!';
+      notify('Recipe added!', 'success');
+      setTimeout(() => { statusMsg = ''; render(); }, 3000);
+    }
+  } catch (e) {
+    statusMsg = '';
+    notify('Error: ' + e.message, 'error');
+  }
+  loading = false;
+  render();
 }
 
 async function handleFileUpload() {
@@ -704,6 +747,7 @@ function showRecipeModal(r) {
   document.getElementById('modalMeta').innerHTML = `
     <span>⏱ ${r.time || r.cookTime || '?'} min</span>
     ${r.servings ? `<span>🍽 ${r.servings} servings</span>` : ''}
+    ${r.servingWeight ? `<span>⚖️ ${r.servingWeight}g / serving</span>` : ''}
     ${r.cost ? `<span class="modal-cost">€${r.cost}</span>` : ''}
     ${r.difficulty ? `<span style="text-transform:capitalize">${r.difficulty}</span>` : ''}`;
 
@@ -717,7 +761,7 @@ function showRecipeModal(r) {
       r.steps.map((s, i) => `<div style="padding:8px 0;border-bottom:0.5px solid #f0f0f0;font-size:14px;color:#444"><span style="font-weight:700;color:#2a9d5c">${i+1}.</span> ${s}</div>`).join('')
     : '';
 
-  const nutrition = r.nutrition ? buildNutritionPanel(r.nutrition) : '';
+  const nutrition = r.nutrition ? buildNutritionPanel(r.nutrition, r.servingWeight) : '';
 
   document.getElementById('modalIngredients').innerHTML = ings + steps + nutrition;
   document.getElementById('modal').style.display = 'flex';
