@@ -6,7 +6,7 @@ const fs = require('fs');
 const path = require('path');
 const multer = require('multer');
 const ffmpegPath = require('ffmpeg-static');
-const { GoogleGenerativeAI } = require('@google/generative-ai');
+const { GoogleGenAI, Modality } = require('@google/genai');
 
 dotenv.config();
 
@@ -15,37 +15,32 @@ app.use(cors());
 app.use(express.json({ limit: '50mb' }));
 
 const PORT = process.env.PORT || 3001;
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-const model = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
-// ── File upload ──
+const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+
 const upload = multer({ dest: '/tmp/uploads/' });
 
-// ── Serve frontend ──
 app.use(express.static(path.join(__dirname, 'public')));
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-// ── Helpers ──
+// ── Frame extraction ──
 async function extractFrames(videoPath) {
   const frameDir = path.join('/tmp', `frames_${Date.now()}`);
   fs.mkdirSync(frameDir, { recursive: true });
 
-  // Step 1: get video duration
   const duration = await new Promise((resolve) => {
-    exec(`"${ffmpegPath}" -i "${videoPath}" 2>&1 | grep Duration`, (err, stdout) => {
-      const match = stdout.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
+    exec(`"${ffmpegPath}" -i "${videoPath}" 2>&1`, (err, stdout, stderr) => {
+      const out = stdout + stderr;
+      const match = out.match(/Duration:\s*(\d+):(\d+):(\d+\.\d+)/);
       if (match) {
         const secs = parseInt(match[1]) * 3600 + parseInt(match[2]) * 60 + parseFloat(match[3]);
         resolve(secs);
       } else {
-        resolve(60); // fallback
+        resolve(30);
       }
     });
   });
 
-  // Step 2: pick fps so we get ~20 frames regardless of video length
-  // For a 15s reel: 20/15 = 1.33fps. For a 60s video: 20/60 = 0.33fps. Min 1fps for short clips.
-  const targetFrames = 20;
-  const fps = Math.max(1, Math.min(4, targetFrames / duration)).toFixed(2);
+  const fps = Math.max(1, Math.min(4, (20 / duration))).toFixed(2);
 
   return new Promise((resolve, reject) => {
     exec(`"${ffmpegPath}" -i "${videoPath}" -vf "fps=${fps},scale=640:-1" "${frameDir}/frame_%03d.jpg"`, (err) => {
@@ -63,34 +58,107 @@ function cleanup(...paths) {
   paths.flat().forEach(p => { try { if (p && fs.existsSync(p)) fs.unlinkSync(p); } catch {} });
 }
 
-const RECIPE_PROMPT = `You are analyzing frames from a cooking video (likely a fast-paced Instagram Reel or TikTok). 
-The frames are sampled throughout the full video, so ingredients or steps shown quickly are included.
+// ── Build personalized RDI prompt based on user profile ──
+function buildRecipePrompt(profile) {
+  const profileInfo = profile
+    ? `User profile: Age ${profile.age}, ${profile.sex}, ${profile.height}cm, ${profile.weight}kg, activity level: ${profile.activity}.
+Use this to calculate personalized daily RDI percentages for each nutrient.`
+    : `Use standard adult RDI values (2000 kcal reference diet).`;
 
-Your job: identify every ingredient shown or mentioned, and reconstruct the full recipe.
+  return `You are a professional nutritionist and chef analyzing a cooking video.
+The frames are sampled throughout the full video — look for text overlays, ingredients shown briefly, cooking actions, and the final dish.
 
-Rules:
-- Look for text overlays, ingredients on screen, cooking actions, and finished dish
-- If an ingredient appears briefly, still include it
-- Estimate quantities based on what you see (e.g. "2 chicken breasts", "1 cup flour")
-- Estimate cook time from the cooking steps shown
-- Estimate cost in EUR based on typical European grocery prices
-- Difficulty: easy / medium / hard
+${profileInfo}
 
-Return ONLY valid JSON, no extra text:
+Extract the complete recipe AND full nutritional breakdown per serving.
+
+Return ONLY valid JSON (no extra text):
 {
   "title": "Recipe Name",
   "description": "One sentence description of the dish",
-  "ingredients": ["2 chicken breasts", "1 cup flour", "..."],
-  "steps": ["Step 1", "Step 2", "..."],
+  "ingredients": ["2 chicken breasts", "1 cup flour"],
+  "steps": ["Step 1 description", "Step 2 description"],
   "cookTime": 25,
   "servings": 2,
   "difficulty": "easy",
-  "cost": 8.50
+  "cost": 8.50,
+  "nutrition": {
+    "perServing": {
+      "macros": {
+        "calories": { "amount": 450, "unit": "kcal", "rdi": 22 },
+        "protein": { "amount": 35, "unit": "g", "rdi": 70 },
+        "carbohydrates": { "amount": 40, "unit": "g", "rdi": 15 },
+        "fat": { "amount": 14, "unit": "g", "rdi": 18 },
+        "saturatedFat": { "amount": 3, "unit": "g", "rdi": 15 },
+        "fiber": { "amount": 4, "unit": "g", "rdi": 14 },
+        "sugar": { "amount": 6, "unit": "g", "rdi": 7 },
+        "sodium": { "amount": 520, "unit": "mg", "rdi": 23 }
+      },
+      "vitamins": {
+        "vitaminA": { "amount": 120, "unit": "µg", "rdi": 13 },
+        "vitaminB1": { "amount": 0.4, "unit": "mg", "rdi": 33 },
+        "vitaminB2": { "amount": 0.3, "unit": "mg", "rdi": 23 },
+        "vitaminB3": { "amount": 8, "unit": "mg", "rdi": 50 },
+        "vitaminB5": { "amount": 1.2, "unit": "mg", "rdi": 24 },
+        "vitaminB6": { "amount": 0.6, "unit": "mg", "rdi": 35 },
+        "vitaminB7": { "amount": 10, "unit": "µg", "rdi": 33 },
+        "vitaminB9": { "amount": 40, "unit": "µg", "rdi": 10 },
+        "vitaminB12": { "amount": 1.2, "unit": "µg", "rdi": 50 },
+        "vitaminC": { "amount": 15, "unit": "mg", "rdi": 17 },
+        "vitaminD": { "amount": 2, "unit": "µg", "rdi": 13 },
+        "vitaminE": { "amount": 2, "unit": "mg", "rdi": 13 },
+        "vitaminK": { "amount": 30, "unit": "µg", "rdi": 25 }
+      },
+      "minerals": {
+        "calcium": { "amount": 80, "unit": "mg", "rdi": 8 },
+        "iron": { "amount": 3, "unit": "mg", "rdi": 17 },
+        "magnesium": { "amount": 45, "unit": "mg", "rdi": 11 },
+        "phosphorus": { "amount": 280, "unit": "mg", "rdi": 40 },
+        "potassium": { "amount": 520, "unit": "mg", "rdi": 11 },
+        "zinc": { "amount": 3, "unit": "mg", "rdi": 27 },
+        "copper": { "amount": 0.2, "unit": "mg", "rdi": 22 },
+        "manganese": { "amount": 0.5, "unit": "mg", "rdi": 22 },
+        "selenium": { "amount": 25, "unit": "µg", "rdi": 45 },
+        "iodine": { "amount": 40, "unit": "µg", "rdi": 27 },
+        "chromium": { "amount": 10, "unit": "µg", "rdi": 29 },
+        "molybdenum": { "amount": 20, "unit": "µg", "rdi": 44 },
+        "fluoride": { "amount": 0.3, "unit": "mg", "rdi": 8 }
+      }
+    }
+  }
 }`;
+}
+
+// ── Generate food image with Nano Banana (gemini-2.5-flash-image) ──
+async function generateFoodImage(recipeTitle, description) {
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.5-flash-image',
+      contents: `Generate a professional, appetizing food photography image of: ${recipeTitle}. ${description || ''}. 
+Style: overhead shot, natural lighting, on a clean wooden table, restaurant quality plating. 
+Make it look delicious and realistic.`,
+      config: { responseModalities: [Modality.IMAGE] }
+    });
+
+    for (const part of response.candidates[0].content.parts) {
+      if (part.inlineData) {
+        return `data:image/png;base64,${part.inlineData.data}`;
+      }
+    }
+  } catch (err) {
+    console.error('Image generation failed:', err.message);
+  }
+  // Fallback to unsplash if image gen fails
+  return 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
+}
 
 // ── Upload + analyze ──
 app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+
+  let profile = null;
+  try { profile = req.body.profile ? JSON.parse(req.body.profile) : null; } catch {}
+
   const videoPath = req.file.path;
   let frames = [];
   try {
@@ -101,14 +169,18 @@ app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
       inlineData: { mimeType: 'image/jpeg', data: fs.readFileSync(f).toString('base64') }
     }));
 
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [...imageParts, { text: RECIPE_PROMPT }] }]
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash-lite',
+      contents: [{ role: 'user', parts: [...imageParts, { text: buildRecipePrompt(profile) }] }]
     });
 
-    const text = result.response.text();
+    const text = response.candidates[0].content.parts[0].text;
     let recipe = {};
     try { recipe = JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]); } catch {}
-    recipe.image = 'https://images.unsplash.com/photo-1495521821757-a1efb6729352?w=400&h=300&fit=crop';
+
+    // Generate food image in parallel
+    const imageUrl = await generateFoodImage(recipe.title, recipe.description);
+    recipe.image = imageUrl;
 
     cleanup(videoPath, frames);
     res.json({ recipe });
@@ -119,29 +191,38 @@ app.post('/api/analyze-upload', upload.single('video'), async (req, res) => {
   }
 });
 
-// ── Generate recipe ideas from ingredients ──
+// ── Generate recipe ideas ──
 app.post('/api/generate-recipes', async (req, res) => {
-  const { ingredients } = req.body;
+  const { ingredients, profile } = req.body;
   if (!ingredients?.length) return res.status(400).json({ error: 'Ingredients required' });
-  try {
-    const result = await model.generateContent({
-      contents: [{ role: 'user', parts: [{ text: `You are a creative chef. Based on these available ingredients: ${ingredients.join(', ')}
 
-Generate 2 realistic recipe ideas I can make. Return ONLY a valid JSON array:
+  const profileInfo = profile
+    ? `User profile: Age ${profile.age}, ${profile.sex}, ${profile.height}cm, ${profile.weight}kg, activity: ${profile.activity}.`
+    : '';
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash-lite',
+      contents: `You are a creative chef. ${profileInfo}
+Based on these available ingredients: ${ingredients.join(', ')}
+
+Generate 2 realistic recipe ideas. Return ONLY a valid JSON array:
 [
   {
     "title": "Recipe Name",
     "description": "One sentence description",
-    "ingredients": ["ingredient with quantity", "..."],
+    "ingredients": ["ingredient with quantity"],
     "cookTime": 25,
     "difficulty": "easy",
     "cost": 8.50
   }
-]` }] }]
+]`
     });
-    const text = result.response.text();
+
+    const text = response.candidates[0].content.parts[0].text;
     let recipes = [];
     try { recipes = JSON.parse(text.match(/\[[\s\S]*\]/)?.[0]); } catch {}
+
     const images = [
       'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400&h=300&fit=crop',
       'https://images.unsplash.com/photo-1504674900769-7f88ad4a5c20?w=400&h=300&fit=crop',
