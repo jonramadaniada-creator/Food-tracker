@@ -434,8 +434,8 @@ Rules:
 - Supplement with visually spotted ingredients not mentioned in transcript.
 - Merge duplicates — prefer the version with a specific quantity.
 - ALL ingredient quantities must be TOTAL for the whole recipe (not per serving).
-- Include cooking temperatures and times in steps where mentioned.
-- Estimate servings from total quantities.
+- Sort steps into logical cooking order (prep first, then cook components in parallel if needed, then assemble/serve).
+- Remove duplicate or near-identical steps.
 - servingWeight = total estimated cooked weight (g) / servings.
 
 Return ONLY valid JSON (no markdown):
