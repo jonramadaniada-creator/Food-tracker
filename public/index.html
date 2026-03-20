@@ -831,6 +831,38 @@ async function saveGroceryItem() {
 
   saveGroceries();
   closeGroceryModal();
+
+  // Auto-check all saved recipes — if any ingredient matches this grocery, recalculate
+  const newName = grocery.name.toLowerCase();
+  const affectedRecipes = recipes.filter(r =>
+    r.ingredients?.some(ing => {
+      const ingLower = (typeof ing === 'string' ? ing : ing.text || '').toLowerCase();
+      return ingLower.includes(newName) || newName.split(' ').some(w => w.length > 3 && ingLower.includes(w));
+    })
+  );
+
+  if (affectedRecipes.length > 0) {
+    notify(`🔄 Updating nutrition for ${affectedRecipes.length} recipe(s) using ${grocery.name}...`, 'info');
+    affectedRecipes.forEach(async (r) => {
+      try {
+        const res = await fetch(`${API_URL}/api/recalculate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ingredients: (r.ingredients || []).map(i => typeof i === 'string' ? { text: i, price: r.ingredientPrices?.[i] || 0 } : i),
+            servings: r.servings || 4,
+            profile: userProfile || undefined,
+            groceries
+          })
+        });
+        if (res.ok) {
+          const data = await res.json();
+          if (data.nutrition) { r.nutrition = data.nutrition; r.nutritionSource = data.nutritionSource; }
+        }
+      } catch {}
+    });
+  }
+
   notify('Saved! 🎯', 'success');
   render();
 }
@@ -1076,35 +1108,75 @@ async function generateRecipeIdeas() {
 
 // Keep ingredient state for current modal
 let modalIngredients = [];
+let ingUndoStack = [];
+let ingRedoStack = [];
+
+function ingSnapshot() {
+  ingUndoStack.push(JSON.stringify(modalIngredients));
+  if (ingUndoStack.length > 30) ingUndoStack.shift();
+  ingRedoStack = [];
+}
+
+function undoIng() {
+  if (!ingUndoStack.length) return;
+  ingRedoStack.push(JSON.stringify(modalIngredients));
+  modalIngredients = JSON.parse(ingUndoStack.pop());
+  refreshIngEditor();
+}
+
+function redoIng() {
+  if (!ingRedoStack.length) return;
+  ingUndoStack.push(JSON.stringify(modalIngredients));
+  modalIngredients = JSON.parse(ingRedoStack.pop());
+  refreshIngEditor();
+}
 
 function openModal(idx) {
   currentModalRecipeIdx = idx;
   const r = recipes[idx];
-  modalIngredients = (r.ingredients || []).map(text => ({ text, price: r.ingredientPrices?.[text] || 0 }));
+  // Normalize ingredients — handle both plain strings and {text,price} objects
+  modalIngredients = (r.ingredients || []).map(i =>
+    typeof i === 'string' ? { text: i, price: r.ingredientPrices?.[i] || 0 } : i
+  );
+  ingUndoStack = [];
+  ingRedoStack = [];
   showRecipeModal(r);
 }
 
 function openSuggestedModal(idx) {
   currentModalRecipeIdx = null;
-  modalIngredients = (suggestedRecipes[idx].ingredients || []).map(text => ({ text, price: 0 }));
+  modalIngredients = (suggestedRecipes[idx].ingredients || []).map(i =>
+    typeof i === 'string' ? { text: i, price: 0 } : i
+  );
+  ingUndoStack = [];
+  ingRedoStack = [];
   showRecipeModal(suggestedRecipes[idx]);
 }
 
 function renderIngRow(ing, i) {
+  const txt = (ing.text || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;');
   return `<div class="ing-edit-row" id="ingRow_${i}">
-    <input class="ing-edit-text" value="${(ing.text||'').replace(/"/g,'&quot;')}" onchange="updateIngredient(${i},'text',this.value)">
-    <input class="ing-edit-price" type="number" value="${ing.price||''}" placeholder="€" min="0" step="0.01" onchange="updateIngredient(${i},'price',this.value)">
-    <button class="ing-del-btn" onclick="removeIngredientRow(${i})">×</button>
+    <input class="ing-edit-text" value="${txt}" oninput="updateIngredient(${i},'text',this.value)">
+    <input class="ing-edit-price" type="number" value="${ing.price > 0 ? ing.price : ''}" placeholder="€" min="0" step="0.01" oninput="updateIngredient(${i},'price',this.value)">
+    <button class="ing-del-btn" onclick="confirmDeleteIng(${i})">×</button>
   </div>`;
 }
 
+let ingEditTimer = null;
 function updateIngredient(i, field, value) {
   if (!modalIngredients[i]) return;
+  // Snapshot before first keystroke of an edit session
+  if (!ingEditTimer) ingSnapshot();
+  clearTimeout(ingEditTimer);
+  ingEditTimer = setTimeout(() => { ingEditTimer = null; }, 1500);
   if (field === 'price') modalIngredients[i].price = parseFloat(value) || 0;
   else modalIngredients[i].text = value;
 }
 
-function removeIngredientRow(i) {
+function confirmDeleteIng(i) {
+  const name = modalIngredients[i]?.text || 'this ingredient';
+  if (!confirm(`Delete "${name}"?`)) return;
+  ingSnapshot();
   modalIngredients.splice(i, 1);
   refreshIngEditor();
 }
@@ -1112,6 +1184,7 @@ function removeIngredientRow(i) {
 function addIngredientRow() {
   const text = document.getElementById('newIngText').value.trim();
   if (!text) return;
+  ingSnapshot();
   const price = parseFloat(document.getElementById('newIngPrice').value) || 0;
   modalIngredients.push({ text, price });
   document.getElementById('newIngText').value = '';
@@ -1122,6 +1195,10 @@ function addIngredientRow() {
 function refreshIngEditor() {
   const list = document.getElementById('ingEditorList');
   if (list) list.innerHTML = modalIngredients.map((ing, i) => renderIngRow(ing, i)).join('');
+  const undoBtn = document.getElementById('undoIngBtn');
+  const redoBtn = document.getElementById('redoIngBtn');
+  if (undoBtn) { undoBtn.disabled = ingUndoStack.length === 0; undoBtn.style.opacity = ingUndoStack.length ? '1' : '0.35'; }
+  if (redoBtn) { redoBtn.disabled = ingRedoStack.length === 0; redoBtn.style.opacity = ingRedoStack.length ? '1' : '0.35'; }
 }
 
 async function recalculateNutrition() {
@@ -1133,7 +1210,12 @@ async function recalculateNutrition() {
     const res = await fetch(`${API_URL}/api/recalculate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ingredients: modalIngredients, servings: r.servings || 4, profile: userProfile || undefined })
+      body: JSON.stringify({
+        ingredients: modalIngredients,
+        servings: r.servings || 4,
+        profile: userProfile || undefined,
+        groceries: groceries || []
+      })
     });
     if (!res.ok) throw new Error(`Server error ${res.status}`);
     const data = await res.json();
@@ -1181,7 +1263,11 @@ function showRecipeModal(r) {
 
   const ingsHtml = `
     <div class="modal-section-title" style="display:flex;justify-content:space-between;align-items:center">
-      Ingredients <span style="font-size:11px;color:#888;font-weight:400">quantity · price (€)</span>
+      Ingredients <div style="display:flex;gap:6px;align-items:center">
+        <span style="font-size:11px;color:#888;font-weight:400">qty · price (€)</span>
+        <button id="undoIngBtn" onclick="undoIng()" disabled title="Undo" style="padding:3px 8px;background:#f0f0f5;border:none;border-radius:6px;cursor:pointer;font-size:12px;opacity:0.5">↩</button>
+        <button id="redoIngBtn" onclick="redoIng()" disabled title="Redo" style="padding:3px 8px;background:#f0f0f5;border:none;border-radius:6px;cursor:pointer;font-size:12px;opacity:0.5">↪</button>
+      </div>
     </div>
     <div id="ingEditorList">${modalIngredients.map((ing,i) => renderIngRow(ing,i)).join('')}</div>
     <div class="ing-add-row">
