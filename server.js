@@ -27,13 +27,21 @@ app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.ht
 
 // ── Session store for frames (in-memory, auto-expire 1hr) ──
 const sessions = new Map();
-function createSession(frames) {
+function createSession(frames, videoPath) {
   const id = randomUUID();
-  sessions.set(id, { frames, created: Date.now() });
-  // Auto-cleanup after 1 hour
-  setTimeout(() => sessions.delete(id), 60 * 60 * 1000);
+  sessions.set(id, { frames, videoPath, created: Date.now() });
+  setTimeout(() => {
+    const s = sessions.get(id);
+    if (s) {
+      // Clean up video and frames when session expires
+      try { if (s.videoPath && fs.existsSync(s.videoPath)) fs.unlinkSync(s.videoPath); } catch {}
+      s.frames?.forEach(f => { try { if (fs.existsSync(f)) fs.unlinkSync(f); } catch {}; });
+      sessions.delete(id);
+    }
+  }, 60 * 60 * 1000);
   return id;
 }
+
 // Serve individual frame
 app.get('/api/session/:id/frame/:n', (req, res) => {
   const session = sessions.get(req.params.id);
@@ -44,11 +52,35 @@ app.get('/api/session/:id/frame/:n', (req, res) => {
   res.set('Content-Type', 'image/jpeg');
   res.sendFile(framePath);
 });
+
+// Serve video
+app.get('/api/session/:id/video', (req, res) => {
+  const session = sessions.get(req.params.id);
+  if (!session?.videoPath || !fs.existsSync(session.videoPath)) return res.status(404).send('Video not found');
+  const stat = fs.statSync(session.videoPath);
+  const range = req.headers.range;
+  if (range) {
+    const [startStr, endStr] = range.replace(/bytes=/, '').split('-');
+    const start = parseInt(startStr, 10);
+    const end = endStr ? parseInt(endStr, 10) : stat.size - 1;
+    res.writeHead(206, {
+      'Content-Range': `bytes ${start}-${end}/${stat.size}`,
+      'Accept-Ranges': 'bytes',
+      'Content-Length': end - start + 1,
+      'Content-Type': 'video/mp4',
+    });
+    fs.createReadStream(session.videoPath, { start, end }).pipe(res);
+  } else {
+    res.writeHead(200, { 'Content-Length': stat.size, 'Content-Type': 'video/mp4', 'Accept-Ranges': 'bytes' });
+    fs.createReadStream(session.videoPath).pipe(res);
+  }
+});
+
 // List frames in session
 app.get('/api/session/:id/frames', (req, res) => {
   const session = sessions.get(req.params.id);
   if (!session) return res.status(404).json({ error: 'Session expired' });
-  res.json({ count: session.frames.length });
+  res.json({ count: session.frames.length, hasVideo: !!(session.videoPath && fs.existsSync(session.videoPath)) });
 });
 
 // ── yt-dlp ──
@@ -410,14 +442,13 @@ async function analyzeVideo(videoPath, profile, res) {
       pickBestFrame(frames)
     ]);
 
-    // Store frames in session for frontend frame picker
-    const sessionId = createSession(frames);
+    // Store frames AND video in session for frontend playback
+    const sessionId = createSession(frames, videoPath);
     recipe.sessionId = sessionId;
     recipe.frameCount = frames.length;
     recipe.bestFrame = bestFrameIdx;
-
-    // Set image to best frame URL (served from session endpoint)
-    recipe.image = null; // frontend will use session endpoint
+    recipe.hasVideo = true;
+    recipe.image = null; // frontend uses session endpoint
 
     // USDA nutrition
     if (USDA_KEY && recipe.ingredients?.length) {
@@ -432,10 +463,10 @@ async function analyzeVideo(videoPath, profile, res) {
       recipe.nutritionSource = 'estimated';
     }
 
-    cleanup(videoPath);
+    // Video kept alive in session for playback — session auto-cleans after 1hr
     res.json({ recipe });
   } catch (err) {
-    cleanup(videoPath);
+    cleanup(videoPath); // cleanup on error only
     console.error(err.message);
     res.status(500).json({ error: err.message });
   }
