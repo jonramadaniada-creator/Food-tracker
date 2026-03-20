@@ -373,6 +373,89 @@ async function transcribeVideo(videoPath) {
     return null;
   }
 }
+const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
+
+async function extractWithOpenRouter(transcript, allIngredients, allSteps, allNotes) {
+  if (!OPENROUTER_KEY) return null;
+  try {
+    const transcriptSection = transcript
+      ? `FULL VIDEO TRANSCRIPT:\n"${transcript}"\n\n`
+      : '';
+    const res = await axios.post('https://openrouter.ai/api/v1/chat/completions', {
+      model: 'google/gemma-3-12b-it:free',
+      messages: [{ role: 'user', content: `You are a professional chef. Extract the complete recipe from this cooking video data.
+
+${transcriptSection}VISUAL OBSERVATIONS:
+Ingredients spotted: ${allIngredients.join(', ')}
+Steps seen: ${allSteps.join(' | ')}
+Notes: ${allNotes}
+
+Rules:
+- The transcript is the HIGHEST PRIORITY source.
+- Extract exact ingredients and amounts mentioned in transcript.
+- Supplement with visually spotted ingredients not in transcript.
+- ALL quantities must be TOTAL for the whole recipe (not per serving).
+- Include cooking temperatures and times in steps.
+- Sort steps into logical cooking order.
+
+Return ONLY valid JSON (no markdown):
+{"title":"","description":"","ingredients":["900g potatoes","800g chicken breast"],"steps":["Step with temp/time"],"cookTime":35,"servings":4,"servingWeight":320,"difficulty":"easy","cost":8.50}` }],
+      max_tokens: 2000,
+      temperature: 0.1
+    }, {
+      headers: { Authorization: `Bearer ${OPENROUTER_KEY}`, 'Content-Type': 'application/json' },
+      timeout: 30000
+    });
+    const text = res.data.choices?.[0]?.message?.content;
+    return text ? JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]) : null;
+  } catch (err) {
+    console.error('OpenRouter failed:', err.message);
+    return null;
+  }
+}
+
+async function mergeRecipeResults(resultA, resultB, transcript) {
+  if (!resultA && !resultB) return {};
+  if (!resultA) return resultB;
+  if (!resultB) return resultA;
+
+  // Use Groq to intelligently merge both results
+  try {
+    const mergeRes = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: `Two AI models analyzed the same cooking video. Merge their results into the most accurate and complete recipe.
+
+MODEL A RESULT:
+${JSON.stringify(resultA, null, 2)}
+
+MODEL B RESULT:
+${JSON.stringify(resultB, null, 2)}
+
+${transcript ? `ORIGINAL TRANSCRIPT FOR VERIFICATION:\n"${transcript}"\n` : ''}
+
+Merging rules:
+- Include ALL unique ingredients from both models.
+- Where both have an ingredient but with different quantities, use the quantity that matches the transcript, or the more specific one.
+- For steps: use the most complete and logically ordered set from either model.
+- For numeric fields (cookTime, servings, servingWeight, cost): pick the most reasonable value.
+- Remove duplicate ingredients.
+
+Return ONLY valid JSON (no markdown):
+{"title":"","description":"","ingredients":["exact qty ingredient"],"steps":["ordered step"],"cookTime":35,"servings":4,"servingWeight":320,"difficulty":"easy","cost":8.50}` }],
+      max_tokens: 2000,
+      temperature: 0.1
+    });
+    const text = mergeRes.choices[0].message.content;
+    return JSON.parse(text.match(/\{[\s\S]*\}/)?.[0]) || resultA;
+  } catch {
+    // If merge fails, combine ingredient lists manually and use resultA for structure
+    const combined = { ...resultA };
+    const allIngs = new Set([...(resultA.ingredients || []), ...(resultB.ingredients || [])]);
+    combined.ingredients = [...allIngs];
+    return combined;
+  }
+}
+
 async function analyzeFramesMultiPass(frames, transcript = null) {
   const batches = [];
   for (let i = 0; i < frames.length; i += 5) batches.push(frames.slice(i, i + 5));
@@ -414,15 +497,10 @@ Return ONLY JSON: {"ingredients":["qty ingredient"],"steps":["action with temp/t
   const allNotes = results.map(r => r?.notes || '').filter(Boolean).join(' ');
 
   const transcriptSection = transcript
-    ? `FULL VIDEO TRANSCRIPT — this is the most accurate source, the creator speaks every ingredient and amount:
-"${transcript}"
-
-`
+    ? `FULL VIDEO TRANSCRIPT — this is the most accurate source, the creator speaks every ingredient and amount:\n"${transcript}"\n\n`
     : '';
 
-  const finalResponse = await groq.chat.completions.create({
-    model: 'llama-3.3-70b-versatile',
-    messages: [{ role: 'user', content: `You are a professional chef. Extract the complete recipe from this cooking video data.
+  const recipePrompt = `You are a professional chef. Extract the complete recipe from this cooking video data.
 
 ${transcriptSection}VISUAL FRAME ANALYSIS:
 Ingredients spotted: ${allIngredients.join(', ')}
@@ -434,17 +512,30 @@ Rules:
 - Supplement with visually spotted ingredients not mentioned in transcript.
 - Merge duplicates — prefer the version with a specific quantity.
 - ALL ingredient quantities must be TOTAL for the whole recipe (not per serving).
-- Sort steps into logical cooking order (prep first, then cook components in parallel if needed, then assemble/serve).
+- Include cooking temperatures and times in steps where mentioned.
+- Sort steps into logical cooking order (prep → cook components → assemble → serve).
 - Remove duplicate or near-identical steps.
+- Estimate servings from total quantities.
 - servingWeight = total estimated cooked weight (g) / servings.
 
 Return ONLY valid JSON (no markdown):
-{"title":"","description":"","ingredients":["900g potatoes","800g chicken breast","60g Sriracha","60g honey","1 large egg","60g cornflour"],"steps":["Step with temp/time"],"cookTime":35,"servings":4,"servingWeight":320,"difficulty":"easy","cost":8.50}` }],
-    max_tokens: 2000, temperature: 0.1
-  });
+{"title":"","description":"","ingredients":["900g potatoes","800g chicken breast","60g Sriracha","60g honey","1 large egg","60g cornflour"],"steps":["Step with temp/time"],"cookTime":35,"servings":4,"servingWeight":320,"difficulty":"easy","cost":8.50}`;
 
-  try { return JSON.parse(finalResponse.choices[0].message.content.match(/\{[\s\S]*\}/)?.[0]) || {}; }
-  catch { return {}; }
+  // Run Groq and OpenRouter in parallel
+  const [groqResponse, openRouterResult] = await Promise.all([
+    groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: recipePrompt }],
+      max_tokens: 2000, temperature: 0.1
+    }),
+    extractWithOpenRouter(transcript, allIngredients, allSteps, allNotes)
+  ]);
+
+  let groqResult = null;
+  try { groqResult = JSON.parse(groqResponse.choices[0].message.content.match(/\{[\s\S]*\}/)?.[0]) || {}; }
+  catch {}
+
+  return await mergeRecipeResults(groqResult, openRouterResult, transcript);
 }
 
 // ── Pick best frame ──
