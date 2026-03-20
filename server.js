@@ -210,10 +210,12 @@ async function calculateNutritionFromUSDA(ingredients, servings, profile) {
   }));
 
   const s = Math.max(1, servings);
-
-  // Sanity check: if calories per serving > 4000, something is wrong — scale down
   const caloriesPerServing = totals.calories / s;
-  const scaleFactor = caloriesPerServing > 4000 ? 4000 / caloriesPerServing : 1;
+
+  // Sanity check: a single serving shouldn't exceed 1500 kcal for most meals
+  // If it does, something was double-counted — scale everything down proportionally
+  const maxReasonableCalories = 1500;
+  const scaleFactor = caloriesPerServing > maxReasonableCalories ? maxReasonableCalories / caloriesPerServing : 1;
 
   const fmt = (key, unit) => {
     const amount = Math.round((totals[key] / s) * scaleFactor * 10) / 10;
@@ -275,7 +277,18 @@ Return ONLY JSON: {"ingredients":["qty ingredient"],"steps":["action"],"notes":"
     catch { return { ingredients: [], steps: [], notes: '' }; }
   }));
 
-  const allIngredients = [...new Set(results.flatMap(r => r?.ingredients || []))];
+  // Smart dedup: for similar ingredients keep the one with a quantity
+  const seen = new Map();
+  for (const ing of results.flatMap(r => r?.ingredients || [])) {
+    const key = ing.toLowerCase().replace(/[\d\/\.\s,()]+/g, '').replace(/\b(g|kg|oz|lb|cup|tbsp|tsp|ml|l|grams?|pounds?)\b/g, '').trim();
+    const existing = seen.get(key);
+    const hasQty = /\d/.test(ing);
+    const existingHasQty = existing && /\d/.test(existing);
+    if (!existing || (hasQty && !existingHasQty) || (hasQty && existingHasQty && ing.length > existing.length)) {
+      seen.set(key, ing);
+    }
+  }
+  const allIngredients = [...seen.values()];
   const allSteps = results.flatMap(r => r?.steps || []);
   const allNotes = results.map(r => r?.notes || '').filter(Boolean).join(' ');
 
