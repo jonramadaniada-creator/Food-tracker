@@ -92,7 +92,7 @@ function cleanup(videoPath) {
 // ── USDA nutrient IDs ──
 const NUTRIENT_IDS = {
   calories: 1008, protein: 1003, fat: 1004, carbohydrates: 1005,
-  fiber: 1079, sugar: 1063, sodium: 1093, saturatedFat: 1258,
+  fiber: 1079, sugar: 2000, sodium: 1093, saturatedFat: 1258,
   vitaminA: 1106, vitaminB1: 1165, vitaminB2: 1166, vitaminB3: 1167,
   vitaminB5: 1170, vitaminB6: 1175, vitaminB7: 1176, vitaminB9: 1177,
   vitaminB12: 1178, vitaminC: 1162, vitaminD: 1114, vitaminE: 1109,
@@ -138,10 +138,21 @@ function getPersonalizedRDI(profile) {
   };
 }
 
+// Ingredients that should never be parsed at cup quantities — hard cap to tsp amounts
+const LEAVENER_CONDIMENTS = [
+  'baking soda', 'baking powder', 'bicarbonate', 'salt', 'pepper',
+  'garlic powder', 'onion powder', 'paprika', 'oregano', 'cayenne',
+  'chili powder', 'cumin', 'turmeric', 'cinnamon', 'thyme', 'rosemary',
+  'basil', 'bay leaf', 'black pepper', 'white pepper', 'red pepper',
+  'cornstarch', 'potato starch', 'corn starch'
+];
+
 function parseIngredientGrams(ingredientStr) {
   const s = ingredientStr.toLowerCase().trim();
 
-  // Parse fractions like 1/2, 1/4, 3/4
+  // Leaveners/spices/starches: max 30g regardless of stated amount
+  const isLeavener = LEAVENER_CONDIMENTS.some(l => s.includes(l));
+
   function parseNum(str) {
     if (str.includes('/')) {
       const parts = str.split('/');
@@ -155,9 +166,9 @@ function parseIngredientGrams(ingredientStr) {
     { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*g(?:rams?)?\s*(?:$|[^a-z])/, mult: 1, max: 2000 },
     { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*lbs?\b/, mult: 454, max: 3000 },
     { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*oz\b/, mult: 28, max: 1500 },
-    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*cups?\b/, mult: 240, max: 1200 },
-    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*(?:tbsp|tablespoons?)\b/, mult: 15, max: 200 },
-    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*(?:tsp|teaspoons?)\b/, mult: 5, max: 50 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*cups?\b/, mult: 240, max: isLeavener ? 30 : 600 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*(?:tbsp|tablespoons?)\b/, mult: 15, max: isLeavener ? 15 : 200 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*(?:tsp|teaspoons?)\b/, mult: 5, max: isLeavener ? 10 : 50 },
     { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*(?:liters?|l)\b/, mult: 1000, max: 3000 },
     { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*ml\b/, mult: 1, max: 2000 },
   ];
@@ -171,12 +182,13 @@ function parseIngredientGrams(ingredientStr) {
   const countMatch = s.match(/(\d+(?:\/\d+)?(?:\.\d+)?)/);
   if (countMatch) {
     const qty = parseNum(countMatch[1]);
+    if (isLeavener) return Math.min(qty * 5, 30);
     if (s.includes('clove')) return Math.min(qty * 5, 50);
     if (s.includes('slice')) return Math.min(qty * 30, 200);
     if (s.includes('egg')) return Math.min(qty * 55, 330);
     return Math.min(qty * 80, 400);
   }
-  return 100;
+  return isLeavener ? 10 : 100;
 }
 
 // Ingredients to skip in nutrition calc — not meaningfully consumed
@@ -224,13 +236,30 @@ async function lookupUSDA(ingredientStr) {
   } catch { return null; }
 }
 
-async function calculateNutritionFromUSDA(ingredients, servings, profile) {
+async function calculateNutritionFromUSDA(ingredients, servings, profile, groceryList = []) {
   const rdi = getPersonalizedRDI(profile);
   const totals = Object.fromEntries(Object.keys(NUTRIENT_IDS).map(k => [k, 0]));
 
   await Promise.all(ingredients.map(async (ing) => {
-    if (shouldSkipIngredient(ing)) return; // skip spices/leaveners
+    if (shouldSkipIngredient(ing)) return;
     const grams = parseIngredientGrams(ing);
+    if (grams <= 0) return;
+
+    // Check if ingredient matches a grocery item — use its logged nutrition
+    const ingLower = ing.toLowerCase().replace(/[^a-z\s]/g, '').trim();
+    const groceryMatch = groceryList.find(g => {
+      const gName = (g.name || '').toLowerCase();
+      return ingLower.includes(gName) || gName.split(' ').some(w => w.length > 3 && ingLower.includes(w));
+    });
+
+    if (groceryMatch?.nutrition) {
+      const scale = grams / (groceryMatch.weight || 100);
+      for (const key of Object.keys(NUTRIENT_IDS)) {
+        totals[key] += (groceryMatch.nutrition[key] || 0) * scale;
+      }
+      return;
+    }
+
     const nutrients = await lookupUSDA(ing);
     if (!nutrients) return;
     for (const key of Object.keys(NUTRIENT_IDS)) {
@@ -393,7 +422,7 @@ async function analyzeVideo(videoPath, profile, res) {
     // USDA nutrition
     if (USDA_KEY && recipe.ingredients?.length) {
       try {
-        recipe.nutrition = await calculateNutritionFromUSDA(recipe.ingredients, recipe.servings || 4, profile);
+        recipe.nutrition = await calculateNutritionFromUSDA(recipe.ingredients, recipe.servings || 4, profile, req.body.groceries || []);
         recipe.nutritionSource = 'usda';
       } catch (err) {
         console.error('USDA failed:', err.message);
@@ -525,20 +554,22 @@ app.post('/api/estimate-grocery', async (req, res) => {
 
 // ── Recalculate nutrition + cost from edited ingredients ──
 app.post('/api/recalculate', async (req, res) => {
-  const { ingredients, servings, profile } = req.body;
-  // ingredients: [{ text: "900g potatoes", price: 1.50 }] — price optional
-  if (!ingredients?.length) return res.status(400).json({ error: 'Ingredients required' });
+  // ingredients can be [{text, price}] or plain strings — normalize both
+  const rawIngredients = req.body.ingredients || [];
+  if (!rawIngredients.length) return res.status(400).json({ error: 'Ingredients required' });
+
+  const ingredients = rawIngredients.map(i => typeof i === 'string' ? { text: i, price: 0 } : i);
+  const ingTexts = ingredients.map(i => i.text).filter(Boolean);
+  const { servings, profile, groceries = [] } = req.body;
+  const s = Math.max(1, servings || 4);
 
   try {
-    const ingTexts = ingredients.map(i => i.text);
-    const s = Math.max(1, servings || 4);
-
     // USDA nutrition
     let nutrition = null;
     let nutritionSource = 'estimated';
     if (USDA_KEY) {
       try {
-        nutrition = await calculateNutritionFromUSDA(ingTexts, s, profile || null);
+        nutrition = await calculateNutritionFromUSDA(ingTexts, s, profile || null, groceries);
         nutritionSource = 'usda';
       } catch {}
     }
