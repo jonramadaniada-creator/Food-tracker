@@ -140,6 +140,39 @@
   .modal-ing-price { color: #2a9d5c; font-weight: 600; }
   .btn-save { width: 100%; background: #2a9d5c; color: #fff; border: none; border-radius: 14px; padding: 15px; font-size: 16px; font-weight: 700; font-family: inherit; cursor: pointer; margin-top: 20px; }
 
+  /* Grocery items */
+  .grocery-item { background: #fff; border-radius: 14px; padding: 14px; margin-bottom: 10px; display: flex; align-items: center; gap: 12px; cursor: pointer; transition: all 0.2s; border: 2px solid transparent; user-select: none; }
+  .grocery-item.in-fridge { border-color: #2a9d5c; background: #f0faf4; }
+  .grocery-item.primary { border-color: #e53e3e; background: #fff5f5; }
+  .grocery-icon { width: 42px; height: 42px; border-radius: 10px; background: #f0f0f5; display: flex; align-items: center; justify-content: center; font-size: 20px; flex-shrink: 0; }
+  .grocery-name { font-size: 14px; font-weight: 600; color: #111; }
+  .grocery-sub { font-size: 12px; color: #888; margin-top: 2px; }
+  .grocery-right { margin-left: auto; text-align: right; flex-shrink: 0; }
+  .grocery-price { font-size: 13px; font-weight: 700; color: #2a9d5c; }
+  .grocery-cal { font-size: 11px; color: #aaa; }
+  .primary-dot { width: 8px; height: 8px; background: #e53e3e; border-radius: 50%; margin-left: auto; flex-shrink: 0; }
+  .btn-add-grocery { width: 100%; padding: 13px; background: #2a9d5c; color: #fff; border: none; border-radius: 14px; font-size: 15px; font-weight: 700; font-family: inherit; cursor: pointer; margin-bottom: 16px; }
+
+  /* Grocery edit modal */
+  .gmrow { margin-bottom: 10px; }
+  .gmrow label { font-size: 12px; font-weight: 600; color: #555; display: block; margin-bottom: 4px; }
+  .gmrow input { width: 100%; padding: 9px 10px; border: 1.5px solid #e5e5ea; border-radius: 9px; font-size: 14px; font-family: inherit; outline: none; }
+  .gmrow input:focus { border-color: #2a9d5c; }
+  .gm-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .gm-section { font-size: 11px; font-weight: 700; color: #aaa; text-transform: uppercase; letter-spacing: 0.5px; margin: 14px 0 8px; }
+
+  /* Ingredient editor */
+  .ing-edit-row { display: flex; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 0.5px solid #f0f0f0; }
+  .ing-edit-text { flex: 1; padding: 6px 8px; border: 1px solid #e5e5ea; border-radius: 8px; font-size: 13px; font-family: inherit; outline: none; }
+  .ing-edit-text:focus { border-color: #2a9d5c; }
+  .ing-edit-price { width: 70px; padding: 6px 8px; border: 1px solid #e5e5ea; border-radius: 8px; font-size: 13px; font-family: inherit; outline: none; }
+  .ing-edit-price:focus { border-color: #2a9d5c; }
+  .ing-del-btn { width: 26px; height: 26px; border-radius: 50%; border: none; background: #fff0f0; color: #e53e3e; font-size: 16px; cursor: pointer; flex-shrink: 0; display: flex; align-items: center; justify-content: center; line-height: 1; }
+  .ing-add-row { display: flex; gap: 6px; margin-top: 8px; }
+  .btn-recalc { width: 100%; background: linear-gradient(135deg, #2563eb, #1d4ed8); color: #fff; border: none; border-radius: 12px; padding: 12px; font-size: 14px; font-weight: 700; font-family: inherit; cursor: pointer; margin-top: 10px; }
+  .btn-recalc:disabled { background: #aaa; cursor: not-allowed; }
+  .cost-badge { display: inline-flex; align-items: center; gap: 6px; background: #f0faf4; border: 1px solid #b2dfc3; border-radius: 10px; padding: 6px 12px; font-size: 13px; color: #1a7a42; font-weight: 600; margin-bottom: 12px; }
+
   /* Photo picker sheet */
   .photo-sheet { padding: 20px; }
   .photo-sheet-title { font-size: 16px; font-weight: 700; margin-bottom: 14px; color: #111; }
@@ -268,6 +301,14 @@
   </div><!-- end .main -->
 </div><!-- end .shell -->
 
+<!-- GROCERY EDIT MODAL -->
+<div class="modal-overlay" id="groceryModal" style="display:none" onclick="closeGroceryModal(event)">
+  <div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:90vh">
+    <button class="modal-close" onclick="closeGroceryModal()">✕</button>
+    <div id="groceryModalContent"></div>
+  </div>
+</div>
+
 <!-- PHOTO PICKER MODAL -->
 <div class="modal-overlay" id="photoModal" style="display:none;z-index:400" onclick="closePhotoModal(event)">
   <div class="modal-sheet" onclick="event.stopPropagation()" style="max-height:80vh">
@@ -291,7 +332,7 @@
   <div class="modal-sheet" onclick="event.stopPropagation()">
     <button class="modal-close" onclick="closeModal()">✕</button>
     <div style="position:relative">
-      <img id="modalImg" src="" alt="" class="modal-img">
+      <img id="modalImg" src="" alt="" class="modal-img" ondblclick="event.preventDefault();event.stopPropagation()">
       <button onclick="openPhotoModal()" style="position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">✎ Change Photo</button>
     </div>
     <div class="modal-title" id="modalTitle"></div>
@@ -332,12 +373,18 @@ function setVideoTab(tab) { videoTab = tab; render(); }
 // Load profile from localStorage
 let userProfile = JSON.parse(localStorage.getItem('userProfile') || 'null');
 
-const tabTitles = { home: 'Home', ideas: 'Ideas', planner: 'Planner', settings: 'Settings' };
+const tabTitles = { home: 'Home', ideas: 'Ideas', planner: 'Planner', groceries: 'Groceries', settings: 'Settings' };
+
+// ── GROCERIES STATE ──
+let groceries = JSON.parse(localStorage.getItem('groceries') || '[]');
+function saveGroceries() { localStorage.setItem('groceries', JSON.stringify(groceries)); }
+let groceryModalId = null;
 
 const NAV = [
   { key: 'home', label: 'Home', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" width="20" height="20"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>` },
   { key: 'ideas', label: 'Ideas', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" width="20" height="20"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>` },
   { key: 'planner', label: 'Planner', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" width="20" height="20"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/><line x1="9" y1="15" x2="13" y2="15"/></svg>` },
+  { key: 'groceries', label: 'Groceries', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" width="20" height="20"><path d="M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4z"/><line x1="3" y1="6" x2="21" y2="6"/><path d="M16 10a4 4 0 01-8 0"/></svg>` },
   { key: 'settings', label: 'Settings', icon: `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" width="20" height="20"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>` },
 ];
 
@@ -381,6 +428,7 @@ function buildContent() {
   const statusHtml = statusMsg ? `<div class="status-bar">${statusMsg}</div>` : '';
   if (activeTab === 'home') return statusHtml + buildBannerOrForm() + buildRecipeGrid();
   if (activeTab === 'ideas') return statusHtml + buildIdeas();
+  if (activeTab === 'groceries') return buildGroceries();
   if (activeTab === 'settings') return buildSettings();
   if (activeTab === 'planner') return `<div class="placeholder-card"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="5" y="2" width="14" height="20" rx="2"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/></svg><p>Meal planner coming soon</p></div>`;
   return '';
@@ -569,6 +617,238 @@ function handleAddIngredient() {
   render();
 }
 
+// ── GROCERIES ──
+function buildGroceries() {
+  const fridge = groceries.filter(g => g.inFridge);
+  const all = groceries;
+  return `
+    <button class="btn-add-grocery" onclick="openAddGrocery()">+ Add Grocery Item</button>
+    ${all.length === 0 ? `<div class="placeholder-card"><p>No groceries yet. Add items to track what's in your fridge.</p></div>` : ''}
+    ${fridge.length > 0 ? `<div style="font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">In My Fridge (${fridge.length})</div>` : ''}
+    ${fridge.map(g => groceryItemHtml(g)).join('')}
+    ${all.filter(g => !g.inFridge).length > 0 ? `<div style="font-size:11px;font-weight:700;color:#aaa;text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 8px">All Items</div>` : ''}
+    ${all.filter(g => !g.inFridge).map(g => groceryItemHtml(g)).join('')}
+    <p style="font-size:12px;color:#aaa;text-align:center;margin-top:16px">Tap = toggle fridge · Hold = primary (red) · Double-tap = edit</p>`;
+}
+
+function groceryItemHtml(g) {
+  const cls = g.isPrimary ? 'primary' : g.inFridge ? 'in-fridge' : '';
+  const emoji = g.emoji || '🛒';
+  const cal = g.nutrition?.calories ? `${Math.round(g.nutrition.calories * (g.weight||100)/100)} kcal/${g.weight||100}g` : '';
+  const price = g.price ? `€${g.price}` : '';
+  return `<div class="grocery-item ${cls}" 
+    id="gitem_${g.id}"
+    onclick="groceryTap(${g.id})"
+    ondblclick="event.stopPropagation();openEditGrocery(${g.id})"
+    oncontextmenu="event.preventDefault();togglePrimary(${g.id})"
+    data-pressTimer=""
+    ontouchstart="startPress(${g.id})" ontouchend="endPress()" ontouchmove="endPress()">
+    <div class="grocery-icon">${emoji}</div>
+    <div style="flex:1;min-width:0">
+      <div class="grocery-name">${g.name}</div>
+      <div class="grocery-sub">${cal}${cal && price ? ' · ' : ''}${price}</div>
+    </div>
+    ${g.isPrimary ? '<div class="primary-dot"></div>' : ''}
+  </div>`;
+}
+
+let pressTimer = null;
+function startPress(id) {
+  pressTimer = setTimeout(() => { togglePrimary(id); pressTimer = null; }, 600);
+}
+function endPress() {
+  if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
+}
+
+function groceryTap(id) {
+  const g = groceries.find(x => x.id === id);
+  if (!g) return;
+  g.inFridge = !g.inFridge;
+  saveGroceries();
+  render();
+}
+
+function togglePrimary(id) {
+  const g = groceries.find(x => x.id === id);
+  if (!g) return;
+  g.isPrimary = !g.isPrimary;
+  if (g.isPrimary) g.inFridge = true;
+  saveGroceries();
+  render();
+  notify(g.isPrimary ? '🔴 Set as primary ingredient' : 'Removed from primary', 'info');
+}
+
+function openAddGrocery() {
+  groceryModalId = null;
+  document.getElementById('groceryModalContent').innerHTML = renderGroceryForm({});
+  document.getElementById('groceryModal').style.display = 'flex';
+}
+
+function openEditGrocery(id) {
+  groceryModalId = id;
+  const g = groceries.find(x => x.id === id);
+  if (!g) return;
+  document.getElementById('groceryModalContent').innerHTML = renderGroceryForm(g);
+  document.getElementById('groceryModal').style.display = 'flex';
+}
+
+function renderGroceryForm(g) {
+  const n = g.nutrition || {};
+  return `
+    <div style="padding:4px 0 16px">
+      <div style="font-size:18px;font-weight:700;color:#111;margin-bottom:16px">${g.id ? 'Edit' : 'Add'} Grocery</div>
+      <div class="gmrow"><label>Name</label><input id="gName" value="${g.name||''}" placeholder="e.g. Chicken Breast"></div>
+      <div class="gm-grid">
+        <div class="gmrow"><label>Emoji</label><input id="gEmoji" value="${g.emoji||''}" placeholder="🥩" style="font-size:20px"></div>
+        <div class="gmrow"><label>Per weight (g)</label><input id="gWeight" type="number" value="${g.weight||100}" placeholder="100"></div>
+      </div>
+      <div class="gmrow"><label>Price (€) — leave blank to estimate</label><input id="gPrice" type="number" value="${g.price||''}" placeholder="AI estimates if empty" step="0.01" min="0"></div>
+
+      <div class="gm-section">Macros per ${g.weight||100}g — leave blank to estimate</div>
+      <div class="gm-grid">
+        <div class="gmrow"><label>Calories (kcal)</label><input id="gCal" type="number" value="${n.calories||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Protein (g)</label><input id="gProt" type="number" value="${n.protein||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Carbs (g)</label><input id="gCarb" type="number" value="${n.carbohydrates||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Fat (g)</label><input id="gFat" type="number" value="${n.fat||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Fiber (g)</label><input id="gFiber" type="number" value="${n.fiber||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Sugar (g)</label><input id="gSugar" type="number" value="${n.sugar||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Sat. Fat (g)</label><input id="gSatFat" type="number" value="${n.saturatedFat||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Sodium (mg)</label><input id="gSodium" type="number" value="${n.sodium||''}" placeholder="auto"></div>
+      </div>
+
+      <div class="gm-section">Vitamins — leave blank to estimate</div>
+      <div class="gm-grid">
+        <div class="gmrow"><label>Vitamin A (µg)</label><input id="gVA" type="number" value="${n.vitaminA||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Vitamin C (mg)</label><input id="gVC" type="number" value="${n.vitaminC||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Vitamin D (µg)</label><input id="gVD" type="number" value="${n.vitaminD||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Vitamin E (mg)</label><input id="gVE" type="number" value="${n.vitaminE||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>B1 Thiamine (mg)</label><input id="gB1" type="number" value="${n.vitaminB1||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>B2 Riboflavin (mg)</label><input id="gB2" type="number" value="${n.vitaminB2||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>B3 Niacin (mg)</label><input id="gB3" type="number" value="${n.vitaminB3||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>B6 (mg)</label><input id="gB6" type="number" value="${n.vitaminB6||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>B9 Folate (µg)</label><input id="gB9" type="number" value="${n.vitaminB9||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>B12 (µg)</label><input id="gB12" type="number" value="${n.vitaminB12||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Vitamin K (µg)</label><input id="gVK" type="number" value="${n.vitaminK||''}" placeholder="auto"></div>
+      </div>
+
+      <div class="gm-section">Minerals — leave blank to estimate</div>
+      <div class="gm-grid">
+        <div class="gmrow"><label>Calcium (mg)</label><input id="gCa" type="number" value="${n.calcium||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Iron (mg)</label><input id="gIron" type="number" value="${n.iron||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Magnesium (mg)</label><input id="gMg" type="number" value="${n.magnesium||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Potassium (mg)</label><input id="gK" type="number" value="${n.potassium||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Zinc (mg)</label><input id="gZn" type="number" value="${n.zinc||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Selenium (µg)</label><input id="gSe" type="number" value="${n.selenium||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Phosphorus (mg)</label><input id="gP" type="number" value="${n.phosphorus||''}" placeholder="auto"></div>
+        <div class="gmrow"><label>Sodium (mg)</label><input id="gNa" type="number" value="${n.sodium||''}" placeholder="auto"></div>
+      </div>
+
+      <button class="btn-green" onclick="saveGroceryItem()" style="margin-top:16px">💾 Save${g.id?'':' & Estimate Missing'}</button>
+      ${g.id ? `<button onclick="deleteGrocery(${g.id})" style="width:100%;margin-top:8px;padding:11px;background:none;border:1.5px solid #e53e3e;border-radius:12px;color:#e53e3e;font-size:14px;font-weight:600;cursor:pointer;font-family:inherit">Delete</button>` : ''}
+    </div>`;
+}
+
+async function saveGroceryItem() {
+  const name = document.getElementById('gName').value.trim();
+  if (!name) { notify('Please enter a name', 'error'); return; }
+
+  const weight = parseFloat(document.getElementById('gWeight').value) || 100;
+  const userPrice = parseFloat(document.getElementById('gPrice').value) || 0;
+
+  // Collect user-entered nutrition (nulls for blanks)
+  const userNutrition = {
+    calories: parseFloat(document.getElementById('gCal').value) || null,
+    protein: parseFloat(document.getElementById('gProt').value) || null,
+    carbohydrates: parseFloat(document.getElementById('gCarb').value) || null,
+    fat: parseFloat(document.getElementById('gFat').value) || null,
+    fiber: parseFloat(document.getElementById('gFiber').value) || null,
+    sugar: parseFloat(document.getElementById('gSugar').value) || null,
+    saturatedFat: parseFloat(document.getElementById('gSatFat').value) || null,
+    sodium: parseFloat(document.getElementById('gSodium').value) || null,
+    vitaminA: parseFloat(document.getElementById('gVA').value) || null,
+    vitaminC: parseFloat(document.getElementById('gVC').value) || null,
+    vitaminD: parseFloat(document.getElementById('gVD').value) || null,
+    vitaminE: parseFloat(document.getElementById('gVE').value) || null,
+    vitaminB1: parseFloat(document.getElementById('gB1').value) || null,
+    vitaminB2: parseFloat(document.getElementById('gB2').value) || null,
+    vitaminB3: parseFloat(document.getElementById('gB3').value) || null,
+    vitaminB6: parseFloat(document.getElementById('gB6').value) || null,
+    vitaminB9: parseFloat(document.getElementById('gB9').value) || null,
+    vitaminB12: parseFloat(document.getElementById('gB12').value) || null,
+    vitaminK: parseFloat(document.getElementById('gVK').value) || null,
+    calcium: parseFloat(document.getElementById('gCa').value) || null,
+    iron: parseFloat(document.getElementById('gIron').value) || null,
+    magnesium: parseFloat(document.getElementById('gMg').value) || null,
+    potassium: parseFloat(document.getElementById('gK').value) || null,
+    zinc: parseFloat(document.getElementById('gZn').value) || null,
+    selenium: parseFloat(document.getElementById('gSe').value) || null,
+    phosphorus: parseFloat(document.getElementById('gP').value) || null,
+  };
+
+  const hasAnyMissing = Object.values(userNutrition).some(v => v === null) || !userPrice;
+
+  let finalNutrition = { ...userNutrition };
+  let finalPrice = userPrice;
+  let source = 'manual';
+
+  if (hasAnyMissing) {
+    notify('⏳ Estimating missing values...', 'info');
+    try {
+      const res = await fetch(`${API_URL}/api/estimate-grocery`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, weight })
+      });
+      const data = await res.json();
+      // Only fill in nulls, keep user values
+      for (const key of Object.keys(finalNutrition)) {
+        if (finalNutrition[key] === null && data.nutrition?.[key] != null) {
+          finalNutrition[key] = data.nutrition[key];
+        }
+      }
+      if (!finalPrice && data.price) finalPrice = data.price;
+      source = data.source;
+    } catch(e) { notify('Could not estimate — saved with partial data', 'info'); }
+  }
+
+  const grocery = {
+    id: groceryModalId || Date.now(),
+    name,
+    emoji: document.getElementById('gEmoji').value || '🛒',
+    weight,
+    price: finalPrice,
+    nutrition: finalNutrition,
+    nutritionSource: source,
+    inFridge: groceryModalId ? (groceries.find(x => x.id === groceryModalId)?.inFridge || false) : false,
+    isPrimary: groceryModalId ? (groceries.find(x => x.id === groceryModalId)?.isPrimary || false) : false,
+  };
+
+  if (groceryModalId) {
+    const idx = groceries.findIndex(x => x.id === groceryModalId);
+    if (idx >= 0) groceries[idx] = grocery;
+  } else {
+    groceries.push(grocery);
+  }
+
+  saveGroceries();
+  closeGroceryModal();
+  notify('Saved! 🎯', 'success');
+  render();
+}
+
+function deleteGrocery(id) {
+  groceries = groceries.filter(x => x.id !== id);
+  saveGroceries();
+  closeGroceryModal();
+  render();
+}
+
+function closeGroceryModal(e) {
+  if (!e || e.target === document.getElementById('groceryModal')) {
+    document.getElementById('groceryModal').style.display = 'none';
+  }
+}
+
+// ── SETTINGS ──
 function buildSettings() {
   const p = userProfile || {};
   return `
@@ -753,21 +1033,37 @@ function handleCustomPhoto(event) {
 }
 
 async function generateRecipeIdeas() {
-  if (!availableIngredients.length) { notify('Select some ingredients first!', 'error'); return; }
+  const fridgeItems = groceries.filter(g => g.inFridge);
+  const primaryItems = groceries.filter(g => g.isPrimary);
+
+  // Fall back to old manual ingredients if no groceries in fridge
+  const useGroceries = fridgeItems.length > 0;
+  const ingList = useGroceries
+    ? fridgeItems.map(g => g.name)
+    : availableIngredients;
+
+  if (!ingList.length) { notify('Add groceries to your fridge first!', 'error'); return; }
+
   loading = true;
   statusMsg = '🍳 Generating recipe ideas...';
   render();
   try {
+    const primaryNames = primaryItems.map(g => g.name);
     const res = await fetch(`${API_URL}/api/generate-recipes`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ingredients: availableIngredients })
+      body: JSON.stringify({
+        ingredients: ingList,
+        primaryIngredients: primaryNames,
+        count: primaryNames.length > 0 ? 10 : 2,
+        profile: userProfile || undefined
+      })
     });
     const data = await res.json();
     if (data.recipes) {
       suggestedRecipes = data.recipes;
       statusMsg = '✓ Recipes ready!';
-      notify('Recipes generated!', 'success');
+      notify(`${data.recipes.length} recipes generated!`, 'success');
       setTimeout(() => { statusMsg = ''; render(); }, 3000);
     }
   } catch (e) {
@@ -778,14 +1074,97 @@ async function generateRecipeIdeas() {
   render();
 }
 
+// Keep ingredient state for current modal
+let modalIngredients = [];
+
 function openModal(idx) {
   currentModalRecipeIdx = idx;
-  showRecipeModal(recipes[idx]);
+  const r = recipes[idx];
+  modalIngredients = (r.ingredients || []).map(text => ({ text, price: r.ingredientPrices?.[text] || 0 }));
+  showRecipeModal(r);
 }
 
 function openSuggestedModal(idx) {
   currentModalRecipeIdx = null;
+  modalIngredients = (suggestedRecipes[idx].ingredients || []).map(text => ({ text, price: 0 }));
   showRecipeModal(suggestedRecipes[idx]);
+}
+
+function renderIngRow(ing, i) {
+  return `<div class="ing-edit-row" id="ingRow_${i}">
+    <input class="ing-edit-text" value="${(ing.text||'').replace(/"/g,'&quot;')}" onchange="updateIngredient(${i},'text',this.value)">
+    <input class="ing-edit-price" type="number" value="${ing.price||''}" placeholder="€" min="0" step="0.01" onchange="updateIngredient(${i},'price',this.value)">
+    <button class="ing-del-btn" onclick="removeIngredientRow(${i})">×</button>
+  </div>`;
+}
+
+function updateIngredient(i, field, value) {
+  if (!modalIngredients[i]) return;
+  if (field === 'price') modalIngredients[i].price = parseFloat(value) || 0;
+  else modalIngredients[i].text = value;
+}
+
+function removeIngredientRow(i) {
+  modalIngredients.splice(i, 1);
+  refreshIngEditor();
+}
+
+function addIngredientRow() {
+  const text = document.getElementById('newIngText').value.trim();
+  if (!text) return;
+  const price = parseFloat(document.getElementById('newIngPrice').value) || 0;
+  modalIngredients.push({ text, price });
+  document.getElementById('newIngText').value = '';
+  document.getElementById('newIngPrice').value = '';
+  refreshIngEditor();
+}
+
+function refreshIngEditor() {
+  const list = document.getElementById('ingEditorList');
+  if (list) list.innerHTML = modalIngredients.map((ing, i) => renderIngRow(ing, i)).join('');
+}
+
+async function recalculateNutrition() {
+  if (currentModalRecipeIdx === null) return;
+  const r = recipes[currentModalRecipeIdx];
+  const btn = document.getElementById('recalcBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Recalculating...'; }
+  try {
+    const res = await fetch(`${API_URL}/api/recalculate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ingredients: modalIngredients, servings: r.servings || 4, profile: userProfile || undefined })
+    });
+    if (!res.ok) throw new Error(`Server error ${res.status}`);
+    const data = await res.json();
+
+    r.ingredients = modalIngredients.map(i => i.text);
+    r.ingredientPrices = Object.fromEntries(modalIngredients.map(i => [i.text, i.price]));
+    if (data.nutrition) { r.nutrition = data.nutrition; r.nutritionSource = data.nutritionSource; }
+    if (data.cost) r.cost = data.cost;
+
+    if (data.estimatedPrices?.length) {
+      data.estimatedPrices.forEach(ep => {
+        const ing = modalIngredients.find(i => i.text === ep.text);
+        if (ing && !ing.price) ing.price = ep.price;
+      });
+      refreshIngEditor();
+    }
+
+    const nutritionPanel = document.getElementById('nutritionPanel');
+    if (nutritionPanel) nutritionPanel.innerHTML = buildNutritionPanel(r.nutrition, r.servingWeight, r.nutritionSource);
+
+    document.getElementById('modalMeta').innerHTML = `
+      <span>⏱ ${r.time || r.cookTime || '?'} min</span>
+      ${r.servings ? `<span>🍽 ${r.servings} servings</span>` : ''}
+      ${r.servingWeight ? `<span>⚖️ ${r.servingWeight}g/serving</span>` : ''}
+      ${data.cost ? `<span class="modal-cost">€${data.cost} total · €${data.costPerServing}/serving</span>` : ''}
+      ${r.difficulty ? `<span style="text-transform:capitalize">${r.difficulty}</span>` : ''}`;
+
+    render();
+    notify('Updated! 🎯', 'success');
+  } catch(e) { notify('Error: ' + e.message, 'error'); }
+  if (btn) { btn.disabled = false; btn.textContent = '🔄 Recalculate Nutrition & Cost'; }
 }
 
 function showRecipeModal(r) {
@@ -800,14 +1179,23 @@ function showRecipeModal(r) {
     ${r.cost ? `<span class="modal-cost">€${r.cost}</span>` : ''}
     ${r.difficulty ? `<span style="text-transform:capitalize">${r.difficulty}</span>` : ''}`;
 
-  const ings = r.ingredients?.length
-    ? `<div class="modal-section-title">Ingredients</div>` + r.ingredients.map(i => `<div class="modal-ing-row"><span>${i}</span></div>`).join('')
-    : '';
+  const ingsHtml = `
+    <div class="modal-section-title" style="display:flex;justify-content:space-between;align-items:center">
+      Ingredients <span style="font-size:11px;color:#888;font-weight:400">quantity · price (€)</span>
+    </div>
+    <div id="ingEditorList">${modalIngredients.map((ing,i) => renderIngRow(ing,i)).join('')}</div>
+    <div class="ing-add-row">
+      <input class="ing-edit-text" id="newIngText" placeholder="Add ingredient...">
+      <input class="ing-edit-price" id="newIngPrice" type="number" placeholder="€" min="0" step="0.01">
+      <button onclick="addIngredientRow()" style="padding:6px 12px;background:#2a9d5c;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap">+ Add</button>
+    </div>
+    ${currentModalRecipeIdx !== null ? `<button class="btn-recalc" id="recalcBtn" onclick="recalculateNutrition()">🔄 Recalculate Nutrition & Cost</button>` : ''}`;
+
   const steps = r.steps?.length
     ? `<div class="modal-section-title" style="margin-top:16px">Steps</div>` + r.steps.map((s,i) => `<div style="padding:8px 0;border-bottom:0.5px solid #f0f0f0;font-size:14px;color:#444"><span style="font-weight:700;color:#2a9d5c">${i+1}.</span> ${s}</div>`).join('')
     : '';
   const nutrition = r.nutrition ? buildNutritionPanel(r.nutrition, r.servingWeight, r.nutritionSource) : '';
-  document.getElementById('modalIngredients').innerHTML = ings + steps + nutrition;
+  document.getElementById('modalIngredients').innerHTML = ingsHtml + steps + `<div id="nutritionPanel">${nutrition}</div>`;
   document.getElementById('modal').style.display = 'flex';
 }
 
