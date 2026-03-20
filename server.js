@@ -660,5 +660,41 @@ Return ONLY a JSON object mapping index to price: {"0": 1.20, "1": 0.50}` }],
   }
 });
 
+// ── Match ingredient text to grocery list + scale price by weight ──
+app.post('/api/match-ingredient', async (req, res) => {
+  const { text, groceries = [] } = req.body;
+  if (!text) return res.status(400).json({ error: 'text required' });
+
+  const grams = parseIngredientGrams(text);
+  const textLower = text.toLowerCase().replace(/[^a-z\s]/g, '').trim();
+
+  // Try to match against grocery list first
+  const match = groceries.find(g => {
+    const name = (g.name || '').toLowerCase();
+    return textLower.includes(name) || name.split(' ').some(w => w.length > 3 && textLower.includes(w));
+  });
+
+  if (match) {
+    // Scale price from grocery's stored weight to ingredient weight
+    const groceryWeight = match.weight || 100;
+    const scaledPrice = match.price ? Math.round((match.price * grams / groceryWeight) * 100) / 100 : 0;
+    return res.json({ matched: true, groceryName: match.name, grams, price: scaledPrice, source: 'grocery' });
+  }
+
+  // No grocery match — estimate price with Groq
+  try {
+    const priceRes = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: `Estimate the cost in EUR for "${text}" (approximately ${Math.round(grams)}g) at a typical European supermarket. Reply ONLY: {"price": 1.50}` }],
+      max_tokens: 30, temperature: 0.1
+    });
+    const m = priceRes.choices[0].message.content.match(/"price"\s*:\s*([\d.]+)/);
+    const price = m ? parseFloat(m[1]) : 0;
+    return res.json({ matched: false, grams, price, source: 'estimated' });
+  } catch {
+    return res.json({ matched: false, grams, price: 0, source: 'none' });
+  }
+});
+
 app.get('/api/health', (req, res) => res.json({ status: 'ok', groq: !!process.env.GROQ_API_KEY, usda: !!USDA_KEY }));
 app.listen(PORT, '0.0.0.0', () => console.log(`✅ RecipeBox running on port ${PORT}`));
