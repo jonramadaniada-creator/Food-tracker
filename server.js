@@ -138,38 +138,60 @@ function getPersonalizedRDI(profile) {
   };
 }
 
-// ── FIXED gram parser ──
 function parseIngredientGrams(ingredientStr) {
   const s = ingredientStr.toLowerCase().trim();
 
-  // Try each unit pattern — look for NUMBER immediately followed by unit
+  // Parse fractions like 1/2, 1/4, 3/4
+  function parseNum(str) {
+    if (str.includes('/')) {
+      const parts = str.split('/');
+      return parseFloat(parts[0]) / parseFloat(parts[1]);
+    }
+    return parseFloat(str);
+  }
+
   const patterns = [
-    { re: /(\d+(?:\.\d+)?)\s*kg/, mult: 1000, max: 5000 },
-    { re: /(\d+(?:\.\d+)?)\s*g(?:rams?)?(?:\s|$|,|\))/, mult: 1, max: 2000 },
-    { re: /(\d+(?:\.\d+)?)\s*lbs?(?:\s|$)/, mult: 454, max: 3000 },
-    { re: /(\d+(?:\.\d+)?)\s*oz(?:\s|$)/, mult: 28, max: 1500 },
-    { re: /(\d+(?:\.\d+)?)\s*(?:cups?|c\.)/, mult: 240, max: 1500 },
-    { re: /(\d+(?:\.\d+)?)\s*(?:tbsp|tablespoons?)/, mult: 15, max: 300 },
-    { re: /(\d+(?:\.\d+)?)\s*(?:tsp|teaspoons?)/, mult: 5, max: 100 },
-    { re: /(\d+(?:\.\d+)?)\s*(?:liters?|l\b)/, mult: 1000, max: 3000 },
-    { re: /(\d+(?:\.\d+)?)\s*(?:ml|milliliters?)/, mult: 1, max: 2000 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*kg\b/, mult: 1000, max: 5000 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*g(?:rams?)?\s*(?:$|[^a-z])/, mult: 1, max: 2000 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*lbs?\b/, mult: 454, max: 3000 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*oz\b/, mult: 28, max: 1500 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*cups?\b/, mult: 240, max: 1200 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*(?:tbsp|tablespoons?)\b/, mult: 15, max: 200 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*(?:tsp|teaspoons?)\b/, mult: 5, max: 50 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*(?:liters?|l)\b/, mult: 1000, max: 3000 },
+    { re: /(\d+(?:\/\d+)?(?:\.\d+)?)\s*ml\b/, mult: 1, max: 2000 },
   ];
 
   for (const { re, mult, max } of patterns) {
     const m = s.match(re);
-    if (m) return Math.min(parseFloat(m[1]) * mult, max);
+    if (m) return Math.min(parseNum(m[1]) * mult, max);
   }
 
-  // Count-based (pieces, items, cloves etc)
-  const countMatch = s.match(/(\d+(?:\.\d+)?)/);
+  // Count-based fallback
+  const countMatch = s.match(/(\d+(?:\/\d+)?(?:\.\d+)?)/);
   if (countMatch) {
-    const qty = parseFloat(countMatch[1]);
+    const qty = parseNum(countMatch[1]);
     if (s.includes('clove')) return Math.min(qty * 5, 50);
     if (s.includes('slice')) return Math.min(qty * 30, 200);
     if (s.includes('egg')) return Math.min(qty * 55, 330);
-    return Math.min(qty * 80, 400); // generic item ~80g each, max 400g
+    return Math.min(qty * 80, 400);
   }
   return 100;
+}
+
+// Ingredients to skip in nutrition calc — not meaningfully consumed
+const SKIP_INGREDIENTS = [
+  'baking soda', 'baking powder', 'bicarbonate', 'cornstarch coating', 'potato starch coating',
+  'salt', 'pepper', 'salt & pepper', 'salt and pepper',
+  'garlic powder', 'onion powder', 'paprika', 'oregano', 'cayenne', 'chili powder',
+  'cumin', 'turmeric', 'cinnamon', 'thyme', 'rosemary', 'basil', 'bay leaf',
+  'black pepper', 'white pepper', 'red pepper flakes'
+];
+
+function shouldSkipIngredient(ing) {
+  const lower = ing.toLowerCase();
+  // Skip pure spices/leaveners — these are seasoning amounts, not meaningful calories
+  return SKIP_INGREDIENTS.some(skip => lower.includes(skip));
 }
 
 // ── USDA lookup ──
@@ -177,16 +199,22 @@ async function lookupUSDA(ingredientStr) {
   if (!USDA_KEY) return null;
   try {
     const searchQuery = ingredientStr
-      .replace(/(\d+(?:\.\d+)?)\s*(kg|g|lb|oz|cup|tbsp|tsp|ml|l|grams?|pounds?|ounces?|tablespoons?|teaspoons?|liters?|milliliters?)\b/gi, '')
-      .replace(/[\d\/\.]+/g, '').replace(/\(.*?\)/g, '').trim();
+      .replace(/(\d+(?:\.\d+)?(?:\/\d+)?)\s*(kg|g|lb|oz|cup|tbsp|tsp|ml|l|grams?|pounds?|ounces?|tablespoons?|teaspoons?|liters?|milliliters?)\b/gi, '')
+      .replace(/[\d\/\.]+/g, '').replace(/\(.*?\)/g, '')
+      .replace(/\b(approx|about|roughly|fresh|dried|chopped|sliced|diced|minced|cooked|raw)\b/gi, '')
+      .trim();
     if (!searchQuery || searchQuery.length < 2) return null;
 
     const res = await axios.get('https://api.nal.usda.gov/fdc/v1/foods/search', {
-      params: { query: searchQuery, api_key: USDA_KEY, dataType: 'SR Legacy,Foundation', pageSize: 1 },
+      params: { query: searchQuery, api_key: USDA_KEY, dataType: 'SR Legacy,Foundation', pageSize: 3 },
       timeout: 5000
     });
-    const food = res.data.foods?.[0];
+
+    // Pick the best match — prefer whole foods over processed
+    const foods = res.data.foods || [];
+    const food = foods.find(f => !f.description?.toLowerCase().includes('dry mix') && !f.description?.toLowerCase().includes('powder')) || foods[0];
     if (!food) return null;
+
     const nutrients = {};
     for (const [key, id] of Object.entries(NUTRIENT_IDS)) {
       const n = food.foodNutrients?.find(n => n.nutrientId === id);
@@ -201,6 +229,7 @@ async function calculateNutritionFromUSDA(ingredients, servings, profile) {
   const totals = Object.fromEntries(Object.keys(NUTRIENT_IDS).map(k => [k, 0]));
 
   await Promise.all(ingredients.map(async (ing) => {
+    if (shouldSkipIngredient(ing)) return; // skip spices/leaveners
     const grams = parseIngredientGrams(ing);
     const nutrients = await lookupUSDA(ing);
     if (!nutrients) return;
@@ -304,7 +333,9 @@ NOTES: ${allNotes}
 
 Rules:
 - Merge duplicates — if "potatoes" and "900g potatoes" both appear, use "900g potatoes"
-- Do NOT multiply quantities — each ingredient appears once in the final list
+- Ingredient quantities must be TOTAL amounts for the whole recipe (all servings combined)
+- Example: if recipe makes 4 servings and uses half a cup of flour per serving, write "2 cups flour" not "half a cup flour"
+- The USDA nutrition calculator will divide everything by servings automatically
 - Estimate total servings from quantities shown
 - servingWeight = total estimated cooked weight (g) / servings
 
@@ -402,17 +433,22 @@ app.post('/api/analyze-video', async (req, res) => {
 });
 
 app.post('/api/generate-recipes', async (req, res) => {
-  const { ingredients, profile } = req.body;
+  const { ingredients, primaryIngredients, count, profile } = req.body;
   if (!ingredients?.length) return res.status(400).json({ error: 'Ingredients required' });
   const profileInfo = profile ? `User: ${profile.age}y, ${profile.sex}, ${profile.weight}kg, ${profile.activity}, ${profile.training}.` : '';
+  const n = Math.min(count || 2, 10);
+  const primaryNote = primaryIngredients?.length
+    ? `IMPORTANT: Generate recipes where the PRIMARY ingredients are: ${primaryIngredients.join(', ')}. These must be the main focus of each recipe.`
+    : '';
   try {
     const response = await groq.chat.completions.create({
       model: 'llama-3.3-70b-versatile',
       messages: [{ role: 'user', content: `You are a creative chef. ${profileInfo}
-Based on: ${ingredients.join(', ')}
-Generate 2 recipe ideas. Return ONLY a valid JSON array (no markdown):
+Available ingredients: ${ingredients.join(', ')}
+${primaryNote}
+Generate ${n} recipe ideas using these ingredients. Return ONLY a valid JSON array (no markdown):
 [{"title":"","description":"","ingredients":["qty ingredient"],"cookTime":25,"difficulty":"easy","cost":8.50}]` }],
-      max_tokens: 1000, temperature: 0.7
+      max_tokens: n > 2 ? 4000 : 1000, temperature: 0.7
     });
     let recipes = [];
     try { recipes = JSON.parse(response.choices[0].message.content.match(/\[[\s\S]*\]/)?.[0]); } catch {}
@@ -422,6 +458,144 @@ Generate 2 recipe ideas. Return ONLY a valid JSON array (no markdown):
     ];
     res.json({ recipes: recipes.map((r, i) => ({ ...r, image: images[i % images.length] })) });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── Estimate nutrition + price for a grocery item ──
+app.post('/api/estimate-grocery', async (req, res) => {
+  const { name, weight } = req.body;
+  if (!name) return res.status(400).json({ error: 'Name required' });
+  const w = weight || 100;
+
+  let usdaNutrition = null;
+  if (USDA_KEY) {
+    try {
+      const usdaRes = await axios.get('https://api.nal.usda.gov/fdc/v1/foods/search', {
+        params: { query: name, api_key: USDA_KEY, dataType: 'SR Legacy,Foundation', pageSize: 1 },
+        timeout: 5000
+      });
+      const food = usdaRes.data.foods?.[0];
+      if (food) {
+        const get = (id) => food.foodNutrients?.find(n => n.nutrientId === id)?.value || 0;
+        usdaNutrition = {
+          calories: get(1008), protein: get(1003), fat: get(1004), carbohydrates: get(1005),
+          fiber: get(1079), sugar: get(1063), sodium: get(1093), saturatedFat: get(1258),
+          vitaminA: get(1106), vitaminB1: get(1165), vitaminB2: get(1166), vitaminB3: get(1167),
+          vitaminB5: get(1170), vitaminB6: get(1175), vitaminB7: get(1176), vitaminB9: get(1177),
+          vitaminB12: get(1178), vitaminC: get(1162), vitaminD: get(1114), vitaminE: get(1109),
+          vitaminK: get(1185), calcium: get(1087), iron: get(1089), magnesium: get(1090),
+          phosphorus: get(1091), potassium: get(1092), zinc: get(1095), copper: get(1098),
+          manganese: get(1101), selenium: get(1103), iodine: get(1100), chromium: get(1096),
+          molybdenum: get(1102), fluoride: get(1099)
+        };
+      }
+    } catch {}
+  }
+
+  // Estimate price with Groq
+  let estimatedPrice = 0;
+  try {
+    const priceRes = await groq.chat.completions.create({
+      model: 'llama-3.3-70b-versatile',
+      messages: [{ role: 'user', content: `What is the typical retail price in EUR for ${w}g of "${name}" at a European supermarket? Reply ONLY with a JSON object: {"price": 1.50}` }],
+      max_tokens: 50, temperature: 0.1
+    });
+    const m = priceRes.choices[0].message.content.match(/"price"\s*:\s*([\d.]+)/);
+    if (m) estimatedPrice = parseFloat(m[1]);
+  } catch {}
+
+  // If no USDA, estimate with Groq
+  if (!usdaNutrition) {
+    try {
+      const nutRes = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: `Estimate nutrition values per ${w}g of "${name}". Return ONLY JSON (no markdown):
+{"calories":0,"protein":0,"fat":0,"carbohydrates":0,"fiber":0,"sugar":0,"sodium":0,"saturatedFat":0,"vitaminA":0,"vitaminB1":0,"vitaminB2":0,"vitaminB3":0,"vitaminB5":0,"vitaminB6":0,"vitaminB7":0,"vitaminB9":0,"vitaminB12":0,"vitaminC":0,"vitaminD":0,"vitaminE":0,"vitaminK":0,"calcium":0,"iron":0,"magnesium":0,"phosphorus":0,"potassium":0,"zinc":0,"copper":0,"manganese":0,"selenium":0,"iodine":0,"chromium":0,"molybdenum":0,"fluoride":0}` }],
+        max_tokens: 500, temperature: 0.1
+      });
+      usdaNutrition = JSON.parse(nutRes.choices[0].message.content.match(/\{[\s\S]*\}/)?.[0]) || {};
+    } catch {}
+  }
+
+  res.json({
+    nutrition: usdaNutrition || {},
+    price: estimatedPrice,
+    source: USDA_KEY && usdaNutrition ? 'usda' : 'estimated'
+  });
+});
+
+// ── Recalculate nutrition + cost from edited ingredients ──
+app.post('/api/recalculate', async (req, res) => {
+  const { ingredients, servings, profile } = req.body;
+  // ingredients: [{ text: "900g potatoes", price: 1.50 }] — price optional
+  if (!ingredients?.length) return res.status(400).json({ error: 'Ingredients required' });
+
+  try {
+    const ingTexts = ingredients.map(i => i.text);
+    const s = Math.max(1, servings || 4);
+
+    // USDA nutrition
+    let nutrition = null;
+    let nutritionSource = 'estimated';
+    if (USDA_KEY) {
+      try {
+        nutrition = await calculateNutritionFromUSDA(ingTexts, s, profile || null);
+        nutritionSource = 'usda';
+      } catch {}
+    }
+
+    // If no USDA key, ask Groq to estimate nutrition for just the new ingredients
+    if (!nutrition) {
+      const response = await groq.chat.completions.create({
+        model: 'llama-3.3-70b-versatile',
+        messages: [{ role: 'user', content: `Estimate nutrition per serving for a recipe with these total ingredients divided by ${s} servings:
+${ingTexts.join('\n')}
+Return ONLY JSON with the same nutrition structure as before (macros, vitamins, minerals with amount/unit/rdi fields).` }],
+        max_tokens: 2000, temperature: 0.2
+      });
+      try {
+        const parsed = JSON.parse(response.choices[0].message.content.match(/\{[\s\S]*\}/)?.[0]);
+        nutrition = parsed.nutrition || parsed;
+        nutritionSource = 'estimated';
+      } catch {}
+    }
+
+    // Cost: sum user-provided prices, estimate missing ones with Groq
+    const withPrices = ingredients.filter(i => i.price > 0);
+    const withoutPrices = ingredients.filter(i => !i.price || i.price <= 0);
+
+    let estimatedPrices = {};
+    if (withoutPrices.length > 0) {
+      try {
+        const priceRes = await groq.chat.completions.create({
+          model: 'llama-3.3-70b-versatile',
+          messages: [{ role: 'user', content: `Estimate the cost in EUR for each of these ingredients at a typical European supermarket.
+${withoutPrices.map((i, idx) => `${idx}: ${i.text}`).join('\n')}
+Return ONLY a JSON object mapping index to price: {"0": 1.20, "1": 0.50}` }],
+          max_tokens: 200, temperature: 0.2
+        });
+        estimatedPrices = JSON.parse(priceRes.choices[0].message.content.match(/\{[\s\S]*\}/)?.[0]) || {};
+      } catch {}
+    }
+
+    const totalCost = withPrices.reduce((sum, i) => sum + (i.price || 0), 0)
+      + withoutPrices.reduce((sum, i, idx) => sum + (parseFloat(estimatedPrices[idx]) || 0), 0);
+
+    const costPerServing = Math.round((totalCost / s) * 100) / 100;
+
+    res.json({
+      nutrition,
+      nutritionSource,
+      cost: Math.round(totalCost * 100) / 100,
+      costPerServing,
+      estimatedPrices: withoutPrices.map((i, idx) => ({
+        text: i.text,
+        price: parseFloat(estimatedPrices[idx]) || 0
+      }))
+    });
+  } catch (err) {
+    console.error(err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', groq: !!process.env.GROQ_API_KEY, usda: !!USDA_KEY }));
