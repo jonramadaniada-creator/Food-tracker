@@ -332,8 +332,13 @@
   <div class="modal-sheet" onclick="event.stopPropagation()">
     <button class="modal-close" onclick="closeModal()">✕</button>
     <div style="position:relative">
-      <img id="modalImg" src="" alt="" class="modal-img" ondblclick="event.preventDefault();event.stopPropagation()">
+      <img id="modalImg" src="" alt="" class="modal-img" ondblclick="playFrameSlideshow()" style="cursor:pointer" title="Double-tap to preview">
       <button onclick="openPhotoModal()" style="position:absolute;bottom:8px;right:8px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit">✎ Change Photo</button>
+      <div id="slideshowOverlay" style="display:none;position:absolute;inset:0;background:rgba(0,0,0,0.85);border-radius:16px;align-items:center;justify-content:center;flex-direction:column;gap:8px">
+        <div id="slideshowFrame" style="width:100%;height:100%;background-size:cover;background-position:center;border-radius:16px"></div>
+        <button onclick="stopSlideshow()" style="position:absolute;top:8px;right:8px;background:rgba(0,0,0,0.6);color:#fff;border:none;border-radius:20px;padding:4px 10px;font-size:12px;cursor:pointer">✕ Stop</button>
+        <div id="slideshowProgress" style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);font-size:11px;color:rgba(255,255,255,0.7)"></div>
+      </div>
     </div>
     <div class="modal-title" id="modalTitle"></div>
     <div class="modal-meta" id="modalMeta"></div>
@@ -1131,6 +1136,44 @@ function redoIng() {
   refreshIngEditor();
 }
 
+// ── Frame slideshow (double-click modal photo) ──
+let slideshowTimer = null;
+
+function playFrameSlideshow() {
+  if (currentModalRecipeIdx === null) return;
+  const r = recipes[currentModalRecipeIdx];
+  if (!r.sessionId || !r.frameCount) { notify('No video frames available', 'info'); return; }
+
+  const overlay = document.getElementById('slideshowOverlay');
+  const frameEl = document.getElementById('slideshowFrame');
+  const progress = document.getElementById('slideshowProgress');
+  overlay.style.display = 'flex';
+
+  let idx = 0;
+  const total = r.frameCount;
+  const interval = Math.max(80, Math.round(2000 / total));
+
+  function showFrame() {
+    frameEl.style.backgroundImage = `url(${API_URL}/api/session/${r.sessionId}/frame/${idx})`;
+    progress.textContent = `${idx + 1} / ${total}`;
+    idx++;
+    if (idx < total) {
+      slideshowTimer = setTimeout(showFrame, interval);
+    } else {
+      progress.textContent = 'Done — double-tap to replay';
+    }
+  }
+
+  stopSlideshow();
+  showFrame();
+}
+
+function stopSlideshow() {
+  if (slideshowTimer) { clearTimeout(slideshowTimer); slideshowTimer = null; }
+  const overlay = document.getElementById('slideshowOverlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
 function openModal(idx) {
   currentModalRecipeIdx = idx;
   const r = recipes[idx];
@@ -1287,6 +1330,7 @@ function showRecipeModal(r) {
 
 function closeModal(e) {
   if (!e || e.target === document.getElementById('modal')) {
+    stopSlideshow();
     document.getElementById('modal').style.display = 'none';
   }
 }
