@@ -1160,13 +1160,17 @@ function closeVideoPlayer() {
 function openModal(idx) {
   currentModalRecipeIdx = idx;
   const r = recipes[idx];
-  // Normalize ingredients — handle both plain strings and {text,price} objects
   modalIngredients = (r.ingredients || []).map(i =>
     typeof i === 'string' ? { text: i, price: r.ingredientPrices?.[i] || 0 } : i
   );
   ingUndoStack = [];
   ingRedoStack = [];
+  ingMatchTimers = {};
   showRecipeModal(r);
+  // Auto-match all ingredients to groceries after render
+  setTimeout(() => {
+    modalIngredients.forEach((_, i) => matchIngredientToGrocery(i));
+  }, 400);
 }
 
 function openSuggestedModal(idx) {
@@ -1181,22 +1185,53 @@ function openSuggestedModal(idx) {
 
 function renderIngRow(ing, i) {
   const txt = (ing.text || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-  return `<div class="ing-edit-row" id="ingRow_${i}">
-    <input class="ing-edit-text" value="${txt}" oninput="updateIngredient(${i},'text',this.value)">
-    <input class="ing-edit-price" type="number" value="${ing.price > 0 ? ing.price : ''}" placeholder="€" min="0" step="0.01" oninput="updateIngredient(${i},'price',this.value)">
+  const matchBadge = ing.matchedGrocery
+    ? `<span style="font-size:10px;background:#e8f4ff;color:#1a6fbf;border-radius:6px;padding:1px 5px;white-space:nowrap;flex-shrink:0">📦 ${ing.matchedGrocery}</span>`
+    : '';
+  return `<div class="ing-edit-row" id="ingRow_${i}" style="flex-wrap:wrap;row-gap:4px">
+    <input class="ing-edit-text" value="${txt}" oninput="updateIngredient(${i},'text',this.value)" style="flex:1;min-width:140px">
+    <input class="ing-edit-price" type="number" id="ingPrice_${i}" value="${ing.price > 0 ? ing.price : ''}" placeholder="€" min="0" step="0.01" oninput="updateIngredient(${i},'price',this.value)">
+    ${matchBadge}
     <button class="ing-del-btn" onclick="confirmDeleteIng(${i})">×</button>
   </div>`;
 }
 
+let ingMatchTimers = {};
 let ingEditTimer = null;
 function updateIngredient(i, field, value) {
   if (!modalIngredients[i]) return;
-  // Snapshot before first keystroke of an edit session
   if (!ingEditTimer) ingSnapshot();
   clearTimeout(ingEditTimer);
   ingEditTimer = setTimeout(() => { ingEditTimer = null; }, 1500);
-  if (field === 'price') modalIngredients[i].price = parseFloat(value) || 0;
-  else modalIngredients[i].text = value;
+  if (field === 'price') {
+    modalIngredients[i].price = parseFloat(value) || 0;
+  } else {
+    modalIngredients[i].text = value;
+    clearTimeout(ingMatchTimers[i]);
+    ingMatchTimers[i] = setTimeout(() => matchIngredientToGrocery(i), 900);
+  }
+}
+
+async function matchIngredientToGrocery(i) {
+  const ing = modalIngredients[i];
+  if (!ing?.text || ing.text.length < 3) return;
+  try {
+    const res = await fetch(`${API_URL}/api/match-ingredient`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: ing.text, groceries })
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    // Only auto-fill price if user hasn't set one
+    if (data.price > 0 && !(modalIngredients[i].price > 0)) {
+      modalIngredients[i].price = data.price;
+    }
+    modalIngredients[i].matchedGrocery = data.matched ? data.groceryName : null;
+    // Re-render just this row
+    const row = document.getElementById(`ingRow_${i}`);
+    if (row) row.outerHTML = renderIngRow(modalIngredients[i], i);
+  } catch {}
 }
 
 function confirmDeleteIng(i) {
