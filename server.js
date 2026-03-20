@@ -342,8 +342,38 @@ async function calculateNutritionFromUSDA(ingredients, servings, profile, grocer
   };
 }
 
-// ── Multi-pass video analysis ──
-async function analyzeFramesMultiPass(frames) {
+// ── Extract audio and transcribe with Groq Whisper ──
+async function transcribeVideo(videoPath) {
+  try {
+    const audioPath = videoPath.replace('.mp4', '_audio.mp3');
+    // Extract audio with ffmpeg
+    await new Promise((resolve, reject) => {
+      exec(`"${ffmpegPath}" -i "${videoPath}" -vn -ar 16000 -ac 1 -b:a 64k "${audioPath}" -y`, (err) => {
+        if (err) reject(err); else resolve();
+      });
+    });
+    if (!fs.existsSync(audioPath)) return null;
+
+    // Transcribe with Groq Whisper
+    const audioData = fs.readFileSync(audioPath);
+    const formData = new (require('form-data'))();
+    formData.append('file', audioData, { filename: 'audio.mp3', contentType: 'audio/mp3' });
+    formData.append('model', 'whisper-large-v3');
+    formData.append('response_format', 'text');
+
+    const response = await axios.post('https://api.groq.com/openai/v1/audio/transcriptions', formData, {
+      headers: { ...formData.getHeaders(), Authorization: `Bearer ${process.env.GROQ_API_KEY}` },
+      timeout: 60000
+    });
+
+    try { fs.unlinkSync(audioPath); } catch {}
+    return response.data || null;
+  } catch (err) {
+    console.error('Transcription failed:', err.message);
+    return null;
+  }
+}
+async function analyzeFramesMultiPass(frames, transcript = null) {
   const batches = [];
   for (let i = 0; i < frames.length; i += 5) batches.push(frames.slice(i, i + 5));
 
@@ -357,9 +387,10 @@ async function analyzeFramesMultiPass(frames) {
       messages: [{ role: 'user', content: [
         ...imageMessages,
         { type: 'text', text: `Frames ${idx * 5 + 1}-${idx * 5 + batch.length} of a cooking video.
-List EVERY ingredient visible including briefly shown ones. Include quantities (e.g. "900g potatoes", "2 tbsp olive oil", "400g chicken").
-Note cooking steps seen.
-Return ONLY JSON: {"ingredients":["qty ingredient"],"steps":["action"],"notes":"observations"}` }
+List EVERY ingredient visible including briefly shown ones, on-screen text, and text overlays showing measurements.
+Include exact quantities shown (e.g. "900g potatoes", "60g Sriracha", "1 large egg", "60g cornflour").
+Note cooking steps and temperatures/times shown on screen.
+Return ONLY JSON: {"ingredients":["qty ingredient"],"steps":["action with temp/time if shown"],"notes":"any text overlays or numbers visible"}` }
       ]}],
       max_tokens: 800, temperature: 0.2
     });
@@ -367,7 +398,7 @@ Return ONLY JSON: {"ingredients":["qty ingredient"],"steps":["action"],"notes":"
     catch { return { ingredients: [], steps: [], notes: '' }; }
   }));
 
-  // Smart dedup: for similar ingredients keep the one with a quantity
+  // Smart dedup: keep ingredient version with a quantity
   const seen = new Map();
   for (const ing of results.flatMap(r => r?.ingredients || [])) {
     const key = ing.toLowerCase().replace(/[\d\/\.\s,()]+/g, '').replace(/\b(g|kg|oz|lb|cup|tbsp|tsp|ml|l|grams?|pounds?)\b/g, '').trim();
@@ -382,27 +413,34 @@ Return ONLY JSON: {"ingredients":["qty ingredient"],"steps":["action"],"notes":"
   const allSteps = results.flatMap(r => r?.steps || []);
   const allNotes = results.map(r => r?.notes || '').filter(Boolean).join(' ');
 
+  const transcriptSection = transcript
+    ? `FULL VIDEO TRANSCRIPT — this is the most accurate source, the creator speaks every ingredient and amount:
+"${transcript}"
+
+`
+    : '';
+
   const finalResponse = await groq.chat.completions.create({
     model: 'llama-3.3-70b-versatile',
-    messages: [{ role: 'user', content: `You are a chef. Compile a recipe from these cooking video observations.
+    messages: [{ role: 'user', content: `You are a professional chef. Extract the complete recipe from this cooking video data.
 
-OBSERVED INGREDIENTS:
-${allIngredients.join('\n')}
-
-STEPS: ${allSteps.join(' | ')}
-NOTES: ${allNotes}
+${transcriptSection}VISUAL FRAME ANALYSIS:
+Ingredients spotted: ${allIngredients.join(', ')}
+Steps seen: ${allSteps.join(' | ')}
+Notes: ${allNotes}
 
 Rules:
-- Merge duplicates — if "potatoes" and "900g potatoes" both appear, use "900g potatoes"
-- Ingredient quantities must be TOTAL amounts for the whole recipe (all servings combined)
-- Example: if recipe makes 4 servings and uses half a cup of flour per serving, write "2 cups flour" not "half a cup flour"
-- The USDA nutrition calculator will divide everything by servings automatically
-- Estimate total servings from quantities shown
-- servingWeight = total estimated cooked weight (g) / servings
+- The transcript is the HIGHEST PRIORITY source. Extract exact ingredients and amounts mentioned in it.
+- Supplement with visually spotted ingredients not mentioned in transcript.
+- Merge duplicates — prefer the version with a specific quantity.
+- ALL ingredient quantities must be TOTAL for the whole recipe (not per serving).
+- Include cooking temperatures and times in steps where mentioned.
+- Estimate servings from total quantities.
+- servingWeight = total estimated cooked weight (g) / servings.
 
 Return ONLY valid JSON (no markdown):
-{"title":"","description":"","ingredients":["900g potatoes","400g chicken"],"steps":["Step 1"],"cookTime":25,"servings":4,"servingWeight":320,"difficulty":"easy","cost":8.50}` }],
-    max_tokens: 1500, temperature: 0.2
+{"title":"","description":"","ingredients":["900g potatoes","800g chicken breast","60g Sriracha","60g honey","1 large egg","60g cornflour"],"steps":["Step with temp/time"],"cookTime":35,"servings":4,"servingWeight":320,"difficulty":"easy","cost":8.50}` }],
+    max_tokens: 2000, temperature: 0.1
   });
 
   try { return JSON.parse(finalResponse.choices[0].message.content.match(/\{[\s\S]*\}/)?.[0]) || {}; }
@@ -437,10 +475,15 @@ async function analyzeVideo(videoPath, profile, res) {
     frames = await extractFrames(videoPath);
     if (!frames.length) throw new Error('No frames extracted');
 
-    const [recipe, bestFrameIdx] = await Promise.all([
-      analyzeFramesMultiPass(frames),
+    // Run transcription + frame picking in parallel with multi-pass analysis
+    const [transcript, bestFrameIdx] = await Promise.all([
+      transcribeVideo(videoPath),
       pickBestFrame(frames)
     ]);
+
+    if (transcript) console.log('✅ Transcript:', transcript.slice(0, 100) + '...');
+
+    const recipe = await analyzeFramesMultiPass(frames, transcript);
 
     // Store frames AND video in session for frontend playback
     const sessionId = createSession(frames, videoPath);
